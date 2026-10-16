@@ -322,3 +322,23 @@ fn bad_config_exits_two() {
         .stderr(predicate::str::starts_with("error: "))
         .stderr(predicate::str::contains("fail_onn"));
 }
+
+#[test]
+fn format_json() {
+    let output = lockline()
+        .args([
+            "check",
+            "tests/fixtures/dangerous",
+            "--format",
+            "json",
+            "--color",
+            "always",
+        ])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["summary"]["errors"], 1);
+}

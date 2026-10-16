@@ -65,6 +65,7 @@ impl Config {
 pub struct StatementReport {
     pub line: usize,
     pub col: usize,
+    pub end_line: usize,
     pub text: String,
     pub analysis: Analysis,
     /// Every table this statement locks was created earlier in the same unit.
@@ -314,6 +315,7 @@ fn analyze_unit(
         report.statements.push(StatementReport {
             line: stmt.line,
             col: stmt.col,
+            end_line: stmt.end_line,
             text: stmt.text.clone(),
             analysis,
             new_table,

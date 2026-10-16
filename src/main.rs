@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use lockline::config::{ConfigError, FileConfig, exclude_set, find_config, load_config};
 use lockline::input::collect_units;
 use lockline::model::Severity;
-use lockline::report::{HumanOptions, render_human};
+use lockline::report::{HumanOptions, render_human, render_json};
 use lockline::rules::infos;
 use lockline::{Config, TransactionMode, analyze};
 
@@ -54,6 +54,15 @@ struct CheckArgs {
     /// When to use colors
     #[arg(long, value_enum, default_value_t = Color::Auto)]
     color: Color,
+    /// Output format (`--quiet` and `--color` only apply to human)
+    #[arg(long, value_enum, default_value_t = Format::Human)]
+    format: Format,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Format {
+    Human,
+    Json,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -152,11 +161,16 @@ fn check(args: CheckArgs) -> ExitCode {
         rules: file_config.rules.into_iter().collect(),
     };
     let report = analyze(&units, &config);
-    let options = HumanOptions {
-        color: use_color(args.color),
-        quiet: args.quiet,
+    let output = match args.format {
+        Format::Human => render_human(
+            &report,
+            &HumanOptions {
+                color: use_color(args.color),
+                quiet: args.quiet,
+            },
+        ),
+        Format::Json => render_json(&report),
     };
-    let output = render_human(&report, &options);
     if let Err(error) = io::stdout().lock().write_all(output.as_bytes())
         && error.kind() != io::ErrorKind::BrokenPipe
     {

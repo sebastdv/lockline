@@ -1,0 +1,98 @@
+---
+source: tests/json.rs
+expression: render_json(&report())
+---
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "migrations/0007_add_email_index.sql",
+      "findings": [],
+      "statements": [
+        {
+          "line": 1,
+          "col": 1,
+          "end_line": 1,
+          "text": "CREATE INDEX idx_users_email ON users (email)",
+          "analyzed": true,
+          "effects": [
+            {
+              "table": "users",
+              "lock": "SHARE",
+              "blocks_reads": false,
+              "blocks_writes": true,
+              "cost": "scan",
+              "new_table": false,
+              "note": "index build"
+            }
+          ],
+          "findings": [
+            {
+              "rule": "create-index-not-concurrently",
+              "severity": "error",
+              "message": "Building an index without CONCURRENTLY blocks all writes to \"users\" until the build finishes.",
+              "help": "CREATE INDEX CONCURRENTLY idx_users_email ON users USING btree (email);\n(CONCURRENTLY cannot run inside a transaction block)",
+              "line": null
+            }
+          ],
+          "suppressed": []
+        },
+        {
+          "line": 3,
+          "col": 1,
+          "end_line": 3,
+          "text": "ALTER TABLE users ADD COLUMN nickname text",
+          "analyzed": true,
+          "effects": [
+            {
+              "table": "users",
+              "lock": "ACCESS EXCLUSIVE",
+              "blocks_reads": true,
+              "blocks_writes": true,
+              "cost": "metadata",
+              "new_table": false,
+              "note": null
+            }
+          ],
+          "findings": [],
+          "suppressed": [
+            {
+              "rule": "missing-lock-timeout",
+              "reason": "runs off-peak"
+            }
+          ]
+        },
+        {
+          "line": 4,
+          "col": 1,
+          "end_line": 4,
+          "text": "GRANT SELECT ON users TO app",
+          "analyzed": false,
+          "effects": [],
+          "findings": [],
+          "suppressed": []
+        }
+      ],
+      "transactions": [
+        {
+          "ends_after_line": null,
+          "statement_count": 3,
+          "locks": [
+            {
+              "table": "users",
+              "lock": "ACCESS EXCLUSIVE"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "errors": 1,
+    "warnings": 0,
+    "suppressed": 1,
+    "files": 1,
+    "statements": 3,
+    "not_analyzed": 1
+  }
+}

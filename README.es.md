@@ -19,4 +19,12 @@ lockline check migrations/
 - No adivina: lo que no está en su catálogo se informa como `not analyzed`.
 - Código de salida `1` si hay errores, para bloquear el PR en CI.
 
-Estado: en desarrollo (hito 1 de 4). Licencia MIT o Apache-2.0.
+- Avisa una vez por archivo si se toma un lock `ACCESS EXCLUSIVE` sin `SET lock_timeout`, y
+  muestra los locks que una transacción retiene hasta el `COMMIT`.
+- `lockline rules` lista las 20 reglas y `lockline explain <regla>` explica cada una.
+- Un hallazgo se suprime con `-- lockline:ignore <regla> <motivo>` en la línea anterior.
+- `lockline.toml` fija la configuración del proyecto (transacciones, umbral, exclusiones y
+  nivel de cada regla).
+- `--format json` entrega un reporte estable para otras herramientas.
+
+Estado: en desarrollo (hito 2 de 4). Licencia MIT o Apache-2.0.
