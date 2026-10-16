@@ -1,10 +1,15 @@
 //! Lint rules. Each rule looks at one statement in context and may report one finding.
 
 mod add_column_rewrite;
+mod backfill_in_migration;
 mod cannot_run_in_transaction;
 mod create_index_not_concurrently;
+mod drop_index_not_concurrently;
+mod refresh_matview_not_concurrently;
+mod reindex_not_concurrently;
+mod rewrite_table;
 
-use crate::model::{Analysis, Finding, Severity};
+use crate::model::{Analysis, Effect, Finding, Severity};
 use crate::parse::Statement;
 use crate::schema::Schema;
 
@@ -45,5 +50,20 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         Box::new(create_index_not_concurrently::CreateIndexNotConcurrently),
         Box::new(cannot_run_in_transaction::CannotRunInTransaction),
         Box::new(add_column_rewrite::AddColumnRewrite),
+        Box::new(drop_index_not_concurrently::DropIndexNotConcurrently),
+        Box::new(reindex_not_concurrently::ReindexNotConcurrently),
+        Box::new(rewrite_table::RewriteTable),
+        Box::new(refresh_matview_not_concurrently::RefreshMatviewNotConcurrently),
+        Box::new(backfill_in_migration::BackfillInMigration),
     ]
+}
+
+impl RuleCtx<'_> {
+    /// The relation the statement changes (`effects[0]`), unless it was created in this unit.
+    pub fn existing_target(&self) -> Option<&Effect> {
+        match self.analysis {
+            Analysis::Locks(effects) => effects.first().filter(|e| !e.new_table),
+            _ => None,
+        }
+    }
 }
