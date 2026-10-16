@@ -175,3 +175,43 @@ fn warnings_do_not_fail_by_default() {
         .assert()
         .code(1);
 }
+
+#[test]
+fn rules_lists_every_rule() {
+    let output = lockline()
+        .arg("rules")
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    assert_eq!(text.lines().count(), 20);
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("create-index-not-concurrently") && l.contains(" error "))
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("missing-lock-timeout") && l.contains(" warning "))
+    );
+}
+
+#[test]
+fn explain_prints_docs() {
+    lockline()
+        .args(["explain", "set-not-null"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::starts_with("# set-not-null\n"))
+        .stdout(predicate::str::contains("## Instead"));
+}
+
+#[test]
+fn explain_unknown_exits_two() {
+    lockline()
+        .args(["explain", "no-such-rule"])
+        .assert()
+        .code(2)
+        .stderr("error: unknown rule \"no-such-rule\"; run \"lockline rules\" to list them\n");
+}

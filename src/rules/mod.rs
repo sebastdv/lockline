@@ -48,6 +48,16 @@ pub trait Rule {
         false
     }
 
+    /// One-line description (from the rule's documentation).
+    fn summary(&self) -> &'static str {
+        summary_of(docs_for(self.id()))
+    }
+
+    /// The rule's documentation page, `docs/rules/<id>.md`.
+    fn docs(&self) -> &'static str {
+        docs_for(self.id())
+    }
+
     fn finding(&self, message: String, help: Option<String>) -> Finding {
         Finding {
             rule: self.id(),
@@ -128,4 +138,91 @@ pub(crate) fn column_constraints(column: &ColumnDef) -> impl Iterator<Item = &Co
             Some(NodeEnum::Constraint(c)) => Some(&**c),
             _ => None,
         })
+}
+
+/// A rule as the `rules` and `explain` commands show it.
+#[derive(Debug, Clone, Copy)]
+pub struct RuleInfo {
+    pub id: &'static str,
+    pub severity: Severity,
+    pub summary: &'static str,
+    pub docs: &'static str,
+}
+
+/// Every rule, in registration order, followed by the findings the analyzer itself raises.
+pub fn infos() -> Vec<RuleInfo> {
+    let mut infos: Vec<RuleInfo> = all()
+        .iter()
+        .map(|rule| RuleInfo {
+            id: rule.id(),
+            severity: rule.severity(),
+            summary: rule.summary(),
+            docs: rule.docs(),
+        })
+        .collect();
+    for (id, severity) in [
+        ("parse-error", Severity::Error),
+        ("ignore-without-reason", Severity::Warning),
+    ] {
+        let docs = docs_for(id);
+        infos.push(RuleInfo {
+            id,
+            severity,
+            summary: summary_of(docs),
+            docs,
+        });
+    }
+    infos
+}
+
+/// The documentation pages are the single source for summaries and `lockline explain`.
+fn docs_for(id: &str) -> &'static str {
+    match id {
+        "create-index-not-concurrently" => {
+            include_str!("../../docs/rules/create-index-not-concurrently.md")
+        }
+        "drop-index-not-concurrently" => {
+            include_str!("../../docs/rules/drop-index-not-concurrently.md")
+        }
+        "reindex-not-concurrently" => include_str!("../../docs/rules/reindex-not-concurrently.md"),
+        "cannot-run-in-transaction" => {
+            include_str!("../../docs/rules/cannot-run-in-transaction.md")
+        }
+        "add-column-rewrite" => include_str!("../../docs/rules/add-column-rewrite.md"),
+        "add-column-not-null-without-default" => {
+            include_str!("../../docs/rules/add-column-not-null-without-default.md")
+        }
+        "add-column-unknown-default" => {
+            include_str!("../../docs/rules/add-column-unknown-default.md")
+        }
+        "alter-column-type" => include_str!("../../docs/rules/alter-column-type.md"),
+        "set-not-null" => include_str!("../../docs/rules/set-not-null.md"),
+        "add-check-without-not-valid" => {
+            include_str!("../../docs/rules/add-check-without-not-valid.md")
+        }
+        "add-foreign-key-without-not-valid" => {
+            include_str!("../../docs/rules/add-foreign-key-without-not-valid.md")
+        }
+        "add-unique-without-index" => include_str!("../../docs/rules/add-unique-without-index.md"),
+        "rewrite-table" => include_str!("../../docs/rules/rewrite-table.md"),
+        "refresh-matview-not-concurrently" => {
+            include_str!("../../docs/rules/refresh-matview-not-concurrently.md")
+        }
+        "missing-lock-timeout" => include_str!("../../docs/rules/missing-lock-timeout.md"),
+        "rename-object" => include_str!("../../docs/rules/rename-object.md"),
+        "drop-object" => include_str!("../../docs/rules/drop-object.md"),
+        "backfill-in-migration" => include_str!("../../docs/rules/backfill-in-migration.md"),
+        "parse-error" => include_str!("../../docs/rules/parse-error.md"),
+        "ignore-without-reason" => include_str!("../../docs/rules/ignore-without-reason.md"),
+        _ => "",
+    }
+}
+
+/// The first paragraph after the `**Severity:**` line.
+fn summary_of(docs: &'static str) -> &'static str {
+    docs.lines()
+        .skip_while(|line| !line.starts_with("**Severity:**"))
+        .skip(1)
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
 }

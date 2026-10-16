@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use lockline::input::collect_units;
 use lockline::model::Severity;
 use lockline::report::{HumanOptions, render_human};
+use lockline::rules::infos;
 use lockline::{Config, TransactionMode, analyze};
 
 #[derive(Parser)]
@@ -24,6 +25,13 @@ struct Cli {
 enum Command {
     /// Analyze migration files, directories (searched for *.sql) or stdin (`-`)
     Check(CheckArgs),
+    /// List every rule with its default severity
+    Rules,
+    /// Show the documentation of one rule
+    Explain {
+        /// Rule id, as printed by `lockline rules`
+        rule: String,
+    },
 }
 
 #[derive(clap::Args)]
@@ -70,6 +78,27 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Check(args) => check(args),
+        Command::Rules => {
+            for info in infos() {
+                println!(
+                    "{:<36} {:<8} {}",
+                    info.id,
+                    info.severity.as_str(),
+                    info.summary
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Explain { rule } => match infos().into_iter().find(|i| i.id == rule) {
+            Some(info) => {
+                print!("{}", info.docs);
+                ExitCode::SUCCESS
+            }
+            None => {
+                eprintln!("error: unknown rule \"{rule}\"; run \"lockline rules\" to list them");
+                ExitCode::from(2)
+            }
+        },
     }
 }
 
