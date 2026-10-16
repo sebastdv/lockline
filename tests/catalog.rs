@@ -178,20 +178,6 @@ fn forbidden_in_transaction_labels() {
 }
 
 #[test]
-fn create_table_that_locks_other_tables_is_not_analyzed_yet() {
-    for sql in [
-        "CREATE TABLE events_2026_10 PARTITION OF events FOR VALUES FROM ('2026-10-01') TO ('2026-11-01')",
-        "CREATE TABLE orders (id int, user_id int REFERENCES users (id))",
-        "CREATE TABLE orders (id int, user_id int, FOREIGN KEY (user_id) REFERENCES users (id))",
-        "CREATE TABLE child (extra int) INHERITS (parent)",
-        "CREATE OR REPLACE VIEW v AS SELECT 1",
-    ] {
-        assert_eq!(analyze(sql), Analysis::NotAnalyzed, "{sql}");
-    }
-    assert_eq!(analyze("CREATE VIEW v AS SELECT 1"), Analysis::NoTableLock);
-}
-
-#[test]
 fn alter_table_catalog() {
     use LockMode::*;
     let cases = [
@@ -462,4 +448,209 @@ fn unknown_subcommand_is_not_analyzed() {
         analyze("ALTER TABLE users ADD COLUMN a int, ENABLE ROW LEVEL SECURITY"),
         Analysis::NotAnalyzed
     );
+}
+
+/// (table, lock, cost) of every effect, or `None` when not analyzed.
+fn summary_of(analysis: Analysis) -> Option<Vec<(String, LockMode, Cost)>> {
+    match analysis {
+        Analysis::Locks(effects) => Some(
+            effects
+                .into_iter()
+                .map(|e| (e.table.to_string(), e.lock, e.cost))
+                .collect(),
+        ),
+        Analysis::NoTableLock => Some(Vec::new()),
+        Analysis::NotAnalyzed => None,
+    }
+}
+
+#[test]
+fn statement_catalog() {
+    use Cost::*;
+    use LockMode::*;
+    let e = |t: &str, l, c| (t.to_string(), l, c);
+    let cases = vec![
+        (
+            "DROP TABLE users, orders",
+            Some(vec![
+                e("users", AccessExclusive, Metadata),
+                e("orders", AccessExclusive, Metadata),
+            ]),
+        ),
+        ("DROP VIEW v", None),
+        ("REINDEX TABLE users", Some(vec![e("users", Share, Scan)])),
+        (
+            "REINDEX TABLE CONCURRENTLY users",
+            Some(vec![e("users", ShareUpdateExclusive, Scan)]),
+        ),
+        ("REINDEX DATABASE app", None),
+        (
+            "VACUUM FULL users",
+            Some(vec![e("users", AccessExclusive, Rewrite)]),
+        ),
+        (
+            "VACUUM users, orders",
+            Some(vec![
+                e("users", ShareUpdateExclusive, Scan),
+                e("orders", ShareUpdateExclusive, Scan),
+            ]),
+        ),
+        (
+            "ANALYZE users",
+            Some(vec![e("users", ShareUpdateExclusive, Scan)]),
+        ),
+        ("VACUUM", None),
+        (
+            "CLUSTER users USING users_pkey",
+            Some(vec![e("users", AccessExclusive, Rewrite)]),
+        ),
+        ("CLUSTER", None),
+        (
+            "REFRESH MATERIALIZED VIEW stats",
+            Some(vec![e("stats", AccessExclusive, Rewrite)]),
+        ),
+        (
+            "REFRESH MATERIALIZED VIEW CONCURRENTLY stats",
+            Some(vec![e("stats", Exclusive, Rewrite)]),
+        ),
+        (
+            "CREATE TRIGGER t BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION f()",
+            Some(vec![e("users", ShareRowExclusive, Metadata)]),
+        ),
+        (
+            "TRUNCATE users, orders",
+            Some(vec![
+                e("users", AccessExclusive, Metadata),
+                e("orders", AccessExclusive, Metadata),
+            ]),
+        ),
+        (
+            "INSERT INTO users (a) VALUES (1)",
+            Some(vec![e("users", RowExclusive, Unknown)]),
+        ),
+        (
+            "UPDATE users SET a = 1",
+            Some(vec![e("users", RowExclusive, Unknown)]),
+        ),
+        (
+            "DELETE FROM users WHERE id = 1",
+            Some(vec![e("users", RowExclusive, Unknown)]),
+        ),
+        (
+            "CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')",
+            Some(vec![e("events", AccessExclusive, Metadata)]),
+        ),
+        (
+            "CREATE TABLE child (x int) INHERITS (parent)",
+            Some(vec![e("parent", ShareUpdateExclusive, Metadata)]),
+        ),
+        (
+            "CREATE TABLE orders (id int, user_id int REFERENCES users (id))",
+            Some(vec![e("users", ShareRowExclusive, Metadata)]),
+        ),
+        (
+            "CREATE TABLE orders (id int, user_id int, FOREIGN KEY (user_id) REFERENCES users (id))",
+            Some(vec![e("users", ShareRowExclusive, Metadata)]),
+        ),
+        (
+            "CREATE OR REPLACE VIEW v AS SELECT 1",
+            Some(vec![e("v", AccessExclusive, Metadata)]),
+        ),
+        ("CREATE VIEW v AS SELECT 1", Some(vec![])),
+        (
+            "COMMENT ON TABLE users IS 'people'",
+            Some(vec![e("users", ShareUpdateExclusive, Metadata)]),
+        ),
+        (
+            "COMMENT ON COLUMN users.email IS 'contact'",
+            Some(vec![e("users", ShareUpdateExclusive, Metadata)]),
+        ),
+        (
+            "COMMENT ON COLUMN app.users.email IS 'contact'",
+            Some(vec![e("app.users", ShareUpdateExclusive, Metadata)]),
+        ),
+        ("COMMENT ON FUNCTION f() IS 'x'", None),
+        (
+            "ALTER TABLE users RENAME TO accounts",
+            Some(vec![e("users", AccessExclusive, Metadata)]),
+        ),
+        (
+            "ALTER TABLE users RENAME COLUMN a TO b",
+            Some(vec![e("users", AccessExclusive, Metadata)]),
+        ),
+        (
+            "ALTER TABLE users RENAME CONSTRAINT c TO d",
+            Some(vec![e("users", AccessExclusive, Metadata)]),
+        ),
+        ("ALTER INDEX i RENAME TO j", None),
+    ];
+    for (sql, expected) in cases {
+        assert_eq!(summary_of(analyze(sql)), expected, "{sql}");
+    }
+}
+
+#[test]
+fn drop_index_resolves_table_from_schema() {
+    let known = analyze_after("CREATE INDEX i ON users (x);", "DROP INDEX i");
+    assert_eq!(
+        summary_of(known),
+        Some(vec![(
+            "users".to_string(),
+            LockMode::AccessExclusive,
+            Cost::Metadata
+        )])
+    );
+    let unknown = effects("DROP INDEX i");
+    assert_eq!(unknown[0].table, table("i"));
+    assert_eq!(
+        unknown[0].note.as_deref(),
+        Some("on the index's table (not seen in this run)")
+    );
+    let concurrent = effects("DROP INDEX CONCURRENTLY i");
+    assert_eq!(concurrent[0].lock, LockMode::ShareUpdateExclusive);
+}
+
+#[test]
+fn reindex_index_notes() {
+    let known = match analyze_after("CREATE INDEX i ON users (x);", "REINDEX INDEX i") {
+        Analysis::Locks(e) => e,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(known[0].table, users());
+    assert_eq!(
+        (known[0].lock, known[0].cost),
+        (LockMode::Share, Cost::Scan)
+    );
+    assert_eq!(known[0].note.as_deref(), Some("rebuilds the index"));
+    let unknown = effects("REINDEX INDEX i");
+    assert_eq!(
+        unknown[0].note.as_deref(),
+        Some("rebuilds the index; on the index's table (not seen in this run)")
+    );
+}
+
+#[test]
+fn def_elem_bool_cases() {
+    assert_eq!(
+        forbidden_in_transaction(&node("REINDEX (CONCURRENTLY false) TABLE t")),
+        None
+    );
+    for sql in [
+        "REINDEX (CONCURRENTLY true) TABLE t",
+        "REINDEX (CONCURRENTLY) TABLE t",
+        "REINDEX (CONCURRENTLY on) TABLE t",
+    ] {
+        assert_eq!(
+            forbidden_in_transaction(&node(sql)),
+            Some("REINDEX CONCURRENTLY"),
+            "{sql}"
+        );
+    }
+    let e = single_effect("VACUUM (FULL false) users");
+    assert_eq!(
+        (e.lock, e.cost),
+        (LockMode::ShareUpdateExclusive, Cost::Scan)
+    );
+    let e = single_effect("VACUUM (FULL) users");
+    assert_eq!((e.lock, e.cost), (LockMode::AccessExclusive, Cost::Rewrite));
 }

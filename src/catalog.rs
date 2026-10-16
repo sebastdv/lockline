@@ -6,12 +6,12 @@
 use pg_query::NodeEnum;
 use pg_query::protobuf::{
     AlterTableCmd, AlterTableStmt, AlterTableType, ColumnDef, ConstrType, Constraint, CreateStmt,
-    ObjectType,
+    DefElem, DropStmt, Node, ObjectType, RangeVar, ReindexObjectType, ReindexStmt, a_const,
 };
 
 use crate::locks::LockMode;
 use crate::model::{Analysis, Cost, Effect, TableRef};
-use crate::schema::{Schema, TypeSpec, is_safe_widening};
+use crate::schema::{Schema, TypeSpec, is_safe_widening, qualified_name};
 use crate::volatility::{Volatility, classify_default, last_name};
 
 const SERIAL_TYPES: &[&str] = &[
@@ -42,18 +42,357 @@ pub fn analyze_statement(node: &NodeEnum, schema: &Schema) -> Analysis {
             ])
         }
         NodeEnum::AlterTableStmt(stmt) => analyze_alter_table(stmt, schema),
-        // These lock existing relations (the parent, the referenced table, the old view);
-        // milestone 2 models them. Until then lockline does not claim they are lock-free.
-        NodeEnum::CreateStmt(stmt) if locks_other_tables(stmt) => Analysis::NotAnalyzed,
-        NodeEnum::ViewStmt(stmt) if stmt.replace => Analysis::NotAnalyzed,
-        NodeEnum::CreateStmt(_)
-        | NodeEnum::TransactionStmt(_)
+        NodeEnum::CreateStmt(stmt) => analyze_create_table(stmt),
+        NodeEnum::ViewStmt(stmt) if stmt.replace => match &stmt.view {
+            Some(view) => locks(vec![
+                Effect::new(
+                    TableRef::from_range_var(view),
+                    LockMode::AccessExclusive,
+                    Cost::Metadata,
+                )
+                .with_note("if the view already exists"),
+            ]),
+            None => Analysis::NotAnalyzed,
+        },
+        NodeEnum::DropStmt(stmt) => analyze_drop(stmt, schema),
+        NodeEnum::ReindexStmt(stmt) => analyze_reindex(stmt, schema),
+        NodeEnum::VacuumStmt(stmt) => {
+            let full = stmt.is_vacuumcmd && has_option(&stmt.options, "full");
+            let (lock, cost) = if full {
+                (LockMode::AccessExclusive, Cost::Rewrite)
+            } else {
+                (LockMode::ShareUpdateExclusive, Cost::Scan)
+            };
+            let tables = stmt.rels.iter().filter_map(|r| match r.node.as_ref() {
+                Some(NodeEnum::VacuumRelation(v)) => v.relation.as_ref(),
+                _ => None,
+            });
+            locks(
+                tables
+                    .map(|t| Effect::new(TableRef::from_range_var(t), lock, cost))
+                    .collect(),
+            )
+        }
+        NodeEnum::ClusterStmt(stmt) => match &stmt.relation {
+            Some(relation) => locks(vec![Effect::new(
+                TableRef::from_range_var(relation),
+                LockMode::AccessExclusive,
+                Cost::Rewrite,
+            )]),
+            None => Analysis::NotAnalyzed,
+        },
+        NodeEnum::RefreshMatViewStmt(stmt) => {
+            let lock = if stmt.concurrent {
+                LockMode::Exclusive
+            } else {
+                LockMode::AccessExclusive
+            };
+            relation_effect(
+                stmt.relation.as_ref(),
+                lock,
+                Cost::Rewrite,
+                Some("rebuilds the materialized view"),
+            )
+        }
+        NodeEnum::CreateTrigStmt(stmt) => relation_effect(
+            stmt.relation.as_ref(),
+            LockMode::ShareRowExclusive,
+            Cost::Metadata,
+            None,
+        ),
+        NodeEnum::TruncateStmt(stmt) => locks(
+            stmt.relations
+                .iter()
+                .filter_map(|r| match r.node.as_ref() {
+                    Some(NodeEnum::RangeVar(rv)) => Some(Effect::new(
+                        TableRef::from_range_var(rv),
+                        LockMode::AccessExclusive,
+                        Cost::Metadata,
+                    )),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        NodeEnum::InsertStmt(stmt) => relation_effect(
+            stmt.relation.as_ref(),
+            LockMode::RowExclusive,
+            Cost::Unknown,
+            None,
+        ),
+        NodeEnum::UpdateStmt(stmt) => relation_effect(
+            stmt.relation.as_ref(),
+            LockMode::RowExclusive,
+            Cost::Unknown,
+            None,
+        ),
+        NodeEnum::DeleteStmt(stmt) => relation_effect(
+            stmt.relation.as_ref(),
+            LockMode::RowExclusive,
+            Cost::Unknown,
+            None,
+        ),
+        NodeEnum::CommentStmt(stmt) => {
+            let target = stmt.object.as_deref().and_then(|object| {
+                if stmt.objtype == ObjectType::ObjectTable as i32 {
+                    qualified_name(object)
+                } else if stmt.objtype == ObjectType::ObjectColumn as i32 {
+                    column_owner(object)
+                } else {
+                    None
+                }
+            });
+            match target {
+                Some(table) => locks(vec![Effect::new(
+                    table,
+                    LockMode::ShareUpdateExclusive,
+                    Cost::Metadata,
+                )]),
+                None => Analysis::NotAnalyzed,
+            }
+        }
+        NodeEnum::RenameStmt(stmt) => {
+            let renames_table_part = [
+                ObjectType::ObjectTable,
+                ObjectType::ObjectColumn,
+                ObjectType::ObjectTabconstraint,
+            ]
+            .iter()
+            .any(|t| *t as i32 == stmt.rename_type);
+            if renames_table_part {
+                relation_effect(
+                    stmt.relation.as_ref(),
+                    LockMode::AccessExclusive,
+                    Cost::Metadata,
+                    None,
+                )
+            } else {
+                Analysis::NotAnalyzed
+            }
+        }
+        NodeEnum::TransactionStmt(_)
         | NodeEnum::VariableSetStmt(_)
         | NodeEnum::CreateFunctionStmt(_)
         | NodeEnum::ViewStmt(_)
-        | NodeEnum::CommentStmt(_)
         | NodeEnum::CreateEnumStmt(_) => Analysis::NoTableLock,
         _ => Analysis::NotAnalyzed,
+    }
+}
+
+const UNKNOWN_INDEX_TABLE: &str = "on the index's table (not seen in this run)";
+
+/// `Locks` with at least one effect; an empty list means the statement names no table.
+fn locks(effects: Vec<Effect>) -> Analysis {
+    if effects.is_empty() {
+        Analysis::NotAnalyzed
+    } else {
+        Analysis::Locks(effects)
+    }
+}
+
+fn relation_effect(
+    relation: Option<&RangeVar>,
+    lock: LockMode,
+    cost: Cost,
+    note: Option<&str>,
+) -> Analysis {
+    let Some(relation) = relation else {
+        return Analysis::NotAnalyzed;
+    };
+    let effect = Effect::new(TableRef::from_range_var(relation), lock, cost);
+    locks(vec![match note {
+        Some(note) => effect.with_note(note),
+        None => effect,
+    }])
+}
+
+/// A new table takes no lock on existing tables, except on the ones it attaches to.
+fn analyze_create_table(stmt: &CreateStmt) -> Analysis {
+    let mut effects = Vec::new();
+    if stmt.partbound.is_some() {
+        for parent in range_vars(&stmt.inh_relations) {
+            effects.push(Effect::new(
+                parent,
+                LockMode::AccessExclusive,
+                Cost::Metadata,
+            ));
+        }
+    } else {
+        for parent in range_vars(&stmt.inh_relations) {
+            effects.push(Effect::new(
+                parent,
+                LockMode::ShareUpdateExclusive,
+                Cost::Metadata,
+            ));
+        }
+    }
+    for elt in stmt.table_elts.iter().chain(&stmt.constraints) {
+        let constraints: Vec<&Constraint> = match elt.node.as_ref() {
+            Some(NodeEnum::Constraint(c)) => vec![c],
+            Some(NodeEnum::ColumnDef(column)) => column
+                .constraints
+                .iter()
+                .filter_map(|c| match c.node.as_ref() {
+                    Some(NodeEnum::Constraint(c)) => Some(&**c),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        for c in constraints {
+            if c.contype == ConstrType::ConstrForeign as i32
+                && let Some(effect) = referenced_table_effect(c)
+                && !effects.iter().any(|e: &Effect| e.table == effect.table)
+            {
+                effects.push(effect);
+            }
+        }
+    }
+    if effects.is_empty() {
+        Analysis::NoTableLock
+    } else {
+        Analysis::Locks(effects)
+    }
+}
+
+fn range_vars(nodes: &[Node]) -> impl Iterator<Item = TableRef> + '_ {
+    nodes.iter().filter_map(|n| match n.node.as_ref() {
+        Some(NodeEnum::RangeVar(rv)) => Some(TableRef::from_range_var(rv)),
+        _ => None,
+    })
+}
+
+fn analyze_drop(stmt: &DropStmt, schema: &Schema) -> Analysis {
+    let names = stmt.objects.iter().filter_map(qualified_name);
+    if stmt.remove_type == ObjectType::ObjectTable as i32 {
+        locks(
+            names
+                .map(|t| Effect::new(t, LockMode::AccessExclusive, Cost::Metadata))
+                .collect(),
+        )
+    } else if stmt.remove_type == ObjectType::ObjectIndex as i32 {
+        let lock = if stmt.concurrent {
+            LockMode::ShareUpdateExclusive
+        } else {
+            LockMode::AccessExclusive
+        };
+        locks(
+            names
+                .map(|index| index_table_effect(&index, schema, lock, Cost::Metadata, None))
+                .collect(),
+        )
+    } else {
+        Analysis::NotAnalyzed
+    }
+}
+
+fn analyze_reindex(stmt: &ReindexStmt, schema: &Schema) -> Analysis {
+    let concurrent = has_option(&stmt.params, "concurrently");
+    let lock = if concurrent {
+        LockMode::ShareUpdateExclusive
+    } else {
+        LockMode::Share
+    };
+    let Some(relation) = &stmt.relation else {
+        return Analysis::NotAnalyzed;
+    };
+    let target = TableRef::from_range_var(relation);
+    match ReindexObjectType::try_from(stmt.kind) {
+        Ok(ReindexObjectType::ReindexObjectTable) => locks(vec![
+            Effect::new(target, lock, Cost::Scan).with_note("rebuilds the table's indexes"),
+        ]),
+        Ok(ReindexObjectType::ReindexObjectIndex) => locks(vec![index_table_effect(
+            &target,
+            schema,
+            lock,
+            Cost::Scan,
+            Some("rebuilds the index"),
+        )]),
+        _ => Analysis::NotAnalyzed,
+    }
+}
+
+/// The lock lands on the index's table; when the run never created that index, the effect
+/// names the index itself and says so.
+fn index_table_effect(
+    index: &TableRef,
+    schema: &Schema,
+    lock: LockMode,
+    cost: Cost,
+    note: Option<&str>,
+) -> Effect {
+    match schema.index_table(index) {
+        Some(table) => {
+            let effect = Effect::new(table.clone(), lock, cost);
+            match note {
+                Some(note) => effect.with_note(note),
+                None => effect,
+            }
+        }
+        None => {
+            let note = match note {
+                Some(note) => format!("{note}; {UNKNOWN_INDEX_TABLE}"),
+                None => UNKNOWN_INDEX_TABLE.to_string(),
+            };
+            Effect::new(index.clone(), lock, cost).with_note(&note)
+        }
+    }
+}
+
+/// The table of a `COMMENT ON COLUMN` target (`[schema.]table.column`).
+fn column_owner(object: &Node) -> Option<TableRef> {
+    let NodeEnum::List(list) = object.node.as_ref()? else {
+        return None;
+    };
+    let names: Vec<&str> = list
+        .items
+        .iter()
+        .filter_map(|n| match n.node.as_ref() {
+            Some(NodeEnum::String(s)) => Some(s.sval.as_str()),
+            _ => None,
+        })
+        .collect();
+    match names.as_slice() {
+        [.., schema, table, _column] => Some(TableRef {
+            schema: Some(schema.to_string()),
+            name: table.to_string(),
+        }),
+        [table, _column] => Some(TableRef {
+            schema: None,
+            name: table.to_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// Whether a `(option [value])` list turns `name` on, with `defGetBoolean` semantics.
+fn has_option(options: &[Node], name: &str) -> bool {
+    options.iter().any(|o| {
+        matches!(o.node.as_ref(), Some(NodeEnum::DefElem(d)) if d.defname == name && def_elem_bool(d))
+    })
+}
+
+/// `defGetBoolean`: no value means true; otherwise true/on/yes/1 or false/off/no/0.
+pub(crate) fn def_elem_bool(d: &DefElem) -> bool {
+    let Some(arg) = d.arg.as_deref().and_then(|a| a.node.as_ref()) else {
+        return true;
+    };
+    match arg {
+        NodeEnum::Boolean(b) => b.boolval,
+        NodeEnum::Integer(i) => i.ival != 0,
+        NodeEnum::String(s) => !matches!(
+            s.sval.to_ascii_lowercase().as_str(),
+            "false" | "off" | "no" | "0"
+        ),
+        NodeEnum::AConst(c) => match &c.val {
+            Some(a_const::Val::Boolval(b)) => b.boolval,
+            Some(a_const::Val::Ival(i)) => i.ival != 0,
+            Some(a_const::Val::Sval(s)) => !matches!(
+                s.sval.to_ascii_lowercase().as_str(),
+                "false" | "off" | "no" | "0"
+            ),
+            _ => true,
+        },
+        _ => true,
     }
 }
 
@@ -62,11 +401,7 @@ pub fn forbidden_in_transaction(node: &NodeEnum) -> Option<&'static str> {
     match node {
         NodeEnum::IndexStmt(stmt) if stmt.concurrent => Some("CREATE INDEX CONCURRENTLY"),
         NodeEnum::DropStmt(stmt) if stmt.concurrent => Some("DROP INDEX CONCURRENTLY"),
-        NodeEnum::ReindexStmt(stmt)
-            if stmt.params.iter().any(|p| {
-                matches!(p.node.as_ref(), Some(NodeEnum::DefElem(d)) if d.defname == "concurrently")
-            }) =>
-        {
+        NodeEnum::ReindexStmt(stmt) if has_option(&stmt.params, "concurrently") => {
             Some("REINDEX CONCURRENTLY")
         }
         NodeEnum::AlterTableStmt(stmt) if alter_cmds(stmt).any(is_detach_concurrently) => {
@@ -75,23 +410,6 @@ pub fn forbidden_in_transaction(node: &NodeEnum) -> Option<&'static str> {
         NodeEnum::VacuumStmt(stmt) if stmt.is_vacuumcmd => Some("VACUUM"),
         _ => None,
     }
-}
-
-/// `PARTITION OF`, `INHERITS` and foreign keys lock the parent or referenced table.
-fn locks_other_tables(stmt: &CreateStmt) -> bool {
-    stmt.partbound.is_some()
-        || !stmt.inh_relations.is_empty()
-        || stmt
-            .table_elts
-            .iter()
-            .chain(&stmt.constraints)
-            .any(|elt| match elt.node.as_ref() {
-                Some(NodeEnum::Constraint(c)) => c.contype == ConstrType::ConstrForeign as i32,
-                Some(NodeEnum::ColumnDef(column)) => {
-                    constraint_types(column).any(|t| t == ConstrType::ConstrForeign as i32)
-                }
-                _ => false,
-            })
 }
 
 fn analyze_alter_table(stmt: &AlterTableStmt, schema: &Schema) -> Analysis {
@@ -324,16 +642,6 @@ fn add_column_cost(column: &ColumnDef) -> Cost {
     } else {
         Cost::Metadata
     }
-}
-
-fn constraint_types(column: &ColumnDef) -> impl Iterator<Item = i32> + '_ {
-    column
-        .constraints
-        .iter()
-        .filter_map(|c| match c.node.as_ref() {
-            Some(NodeEnum::Constraint(c)) => Some(c.contype),
-            _ => None,
-        })
 }
 
 fn alter_cmds(stmt: &AlterTableStmt) -> impl Iterator<Item = &AlterTableCmd> {
