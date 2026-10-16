@@ -61,7 +61,7 @@ The exit code is `1` when there are errors, so it can gate a pull request.
 
 ## Install
 
-From source (requires Rust 1.85+ and a C compiler):
+From source (requires Rust 1.88+ and a C compiler):
 
 ```bash
 cargo install --git https://github.com/<you>/lockline
