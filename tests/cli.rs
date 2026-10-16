@@ -342,3 +342,33 @@ fn format_json() {
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(value["summary"]["errors"], 1);
 }
+
+#[test]
+fn exclude_matches_paths_relative_to_the_config() {
+    let dir = project(
+        "exclude = [\"m/legacy/**\"]\n",
+        &[
+            ("m/legacy/0001.sql", "CREATE INDEX i ON users (email);"),
+            ("m/0002.sql", "SELECT 1;"),
+        ],
+    );
+    lockline()
+        .current_dir(dir.path())
+        .args(["check", "./m"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("in 1 file"));
+    lockline()
+        .current_dir(dir.path().join("m"))
+        .args(["check", "."])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("in 1 file"));
+    let absolute = dir.path().join("m");
+    lockline()
+        .current_dir(dir.path())
+        .args(["check", absolute.to_str().unwrap()])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("in 1 file"));
+}

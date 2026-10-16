@@ -1,8 +1,9 @@
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use globset::GlobSet;
 
 use lockline::config::{ConfigError, FileConfig, exclude_set, find_config, load_config};
 use lockline::input::collect_units;
@@ -115,8 +116,8 @@ fn main() -> ExitCode {
 }
 
 fn check(args: CheckArgs) -> ExitCode {
-    let file_config = match load_project_config() {
-        Ok(config) => config,
+    let (config_dir, file_config) = match load_project_config() {
+        Ok(found) => found,
         Err(error) => {
             eprintln!("error: {error}");
             return ExitCode::from(2);
@@ -137,7 +138,9 @@ fn check(args: CheckArgs) -> ExitCode {
             collected
                 .units
                 .into_iter()
-                .filter(|u| u.name == "<stdin>" || !exclude.is_match(&u.name))
+                .filter(|u| {
+                    u.name == "<stdin>" || !is_excluded(&exclude, config_dir.as_deref(), &u.name)
+                })
                 .collect::<Vec<_>>()
         }
         Err(error) => {
@@ -185,16 +188,49 @@ fn check(args: CheckArgs) -> ExitCode {
     }
 }
 
-/// The closest `lockline.toml` from the current directory up, or defaults.
-fn load_project_config() -> Result<FileConfig, ConfigError> {
+/// The closest `lockline.toml` from the current directory up (and its directory), or
+/// defaults.
+fn load_project_config() -> Result<(Option<PathBuf>, FileConfig), ConfigError> {
     let cwd = std::env::current_dir().map_err(|source| ConfigError::Io {
         path: ".".to_string(),
         source,
     })?;
     match find_config(&cwd) {
-        Some(path) => load_config(&path),
-        None => Ok(FileConfig::default()),
+        Some(path) => {
+            let config = load_config(&path)?;
+            Ok((path.parent().map(Path::to_path_buf), config))
+        }
+        None => Ok((None, FileConfig::default())),
     }
+}
+
+/// `exclude` patterns are relative to the directory of `lockline.toml`, however the path was
+/// typed (`m/x.sql`, `./m/x.sql`, an absolute path, or from a subdirectory).
+fn is_excluded(exclude: &GlobSet, config_dir: Option<&Path>, name: &str) -> bool {
+    let path = Path::new(name);
+    // canonicalize resolves symlinks too (macOS /var -> /private/var); fall back to a
+    // lexical normalization when a path cannot be resolved.
+    let resolve = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| normalize(p));
+    let absolute = resolve(path);
+    let relative = config_dir
+        .map(resolve)
+        .and_then(|dir| absolute.strip_prefix(&dir).ok().map(Path::to_path_buf));
+    exclude.is_match(normalize(path)) || relative.is_some_and(|r| exclude.is_match(r))
+}
+
+/// Resolves `.` and `..` without touching the file system.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn use_color(choice: Color) -> bool {
