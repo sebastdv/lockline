@@ -1,5 +1,6 @@
 //! Parses SQL with the real PostgreSQL parser and keeps the position of every statement.
 
+use pg_query::protobuf::Token;
 use thiserror::Error;
 
 /// One parsed statement and where it starts in the source.
@@ -12,17 +13,22 @@ pub struct Statement {
     pub line: usize,
     /// 1-based column, counted in characters (not bytes).
     pub col: usize,
+    /// 1-based line of the last character of `text`.
+    pub end_line: usize,
 }
 
 #[derive(Debug, Clone, Error)]
 #[error("{message}")]
 pub struct ParseError {
     pub message: String,
+    /// Line of the statement that failed to parse, when it can be located.
+    pub line: Option<usize>,
 }
 
 pub fn parse_sql(sql: &str) -> Result<Vec<Statement>, ParseError> {
     let result = pg_query::parse(sql).map_err(|e| ParseError {
         message: e.to_string(),
+        line: failing_statement_line(sql),
     })?;
 
     let mut statements = Vec::new();
@@ -38,20 +44,66 @@ pub fn parse_sql(sql: &str) -> Result<Vec<Statement>, ParseError> {
             location + raw.stmt_len as usize
         };
         let start = skip_trivia(sql, location, end);
-        let text = sql[start..end]
-            .trim_end()
-            .trim_end_matches(';')
-            .trim_end()
-            .to_string();
+        let end = significant_end(sql, start, end);
+        let text = sql[start..end].to_string();
         let (line, col) = line_col(sql, start);
+        let (end_line, _) = line_col(sql, end);
         statements.push(Statement {
             node,
             text,
             line,
             col,
+            end_line,
         });
     }
     Ok(statements)
+}
+
+/// End of the last token that is neither a comment nor the closing `;`.
+fn significant_end(sql: &str, start: usize, end: usize) -> usize {
+    let fallback = || {
+        start
+            + sql[start..end]
+                .trim_end()
+                .trim_end_matches(';')
+                .trim_end()
+                .len()
+    };
+    let Ok(scan) = pg_query::scan(&sql[start..end]) else {
+        return fallback();
+    };
+    let ignored = [
+        Token::SqlComment as i32,
+        Token::CComment as i32,
+        Token::Ascii59 as i32,
+    ];
+    scan.tokens
+        .iter()
+        .rev()
+        .find(|t| !ignored.contains(&t.token))
+        .map_or_else(fallback, |t| start + t.end as usize)
+}
+
+/// Splits the file at top-level `;` tokens (the scanner understands strings and dollar quotes)
+/// and parses each piece to find the first one that fails.
+fn failing_statement_line(sql: &str) -> Option<usize> {
+    let scan = pg_query::scan(sql).ok()?;
+    let mut bounds: Vec<usize> = scan
+        .tokens
+        .iter()
+        .filter(|t| t.token == Token::Ascii59 as i32)
+        .map(|t| t.start as usize)
+        .collect();
+    bounds.push(sql.len());
+    let mut start = 0;
+    for end in bounds {
+        if pg_query::parse(&sql[start..end]).is_err() {
+            let first = skip_trivia(sql, start, end);
+            return Some(line_col(sql, first).0);
+        }
+        start = (end + 1).min(sql.len());
+    }
+    None
 }
 
 /// Advances past whitespace, `-- line` comments and (nested) `/* block */` comments.
@@ -148,5 +200,38 @@ mod tests {
     fn syntax_error_is_reported() {
         let e = parse_sql("CREATE INDEX ON;").unwrap_err();
         assert!(!e.message.is_empty());
+    }
+
+    #[test]
+    fn trailing_comment_is_not_part_of_last_statement() {
+        let s = parse_sql("SELECT 1;\nSELECT 2 -- trailing").unwrap();
+        assert_eq!(s[1].text, "SELECT 2");
+        let s = parse_sql("SELECT 1;\nSELECT 2 /* c */").unwrap();
+        assert_eq!(s[1].text, "SELECT 2");
+    }
+
+    #[test]
+    fn comment_inside_statement_is_kept() {
+        let s = parse_sql("SELECT 1 -- one\n + 1;").unwrap();
+        assert_eq!(s[0].text, "SELECT 1 -- one\n + 1");
+    }
+
+    #[test]
+    fn end_line_of_multiline_statement() {
+        let s = parse_sql("SELECT\n  1;\nSELECT 2;").unwrap();
+        assert_eq!(s[0].end_line, 2);
+        assert_eq!(s[1].end_line, 3);
+    }
+
+    #[test]
+    fn parse_error_reports_line() {
+        let e = parse_sql("SELECT 1;\n\nCREATE INDEX ON;\nSELECT 2;").unwrap_err();
+        assert_eq!(e.line, Some(3));
+    }
+
+    #[test]
+    fn parse_error_line_after_dollar_quotes() {
+        let sql = "CREATE FUNCTION f() RETURNS int AS $$ SELECT 1; $$ LANGUAGE sql;\nSELEC 2;";
+        assert_eq!(parse_sql(sql).unwrap_err().line, Some(2));
     }
 }

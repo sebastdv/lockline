@@ -140,8 +140,9 @@ fn parse_error_is_a_unit_finding() {
     assert!(
         unit.findings[0]
             .message
-            .starts_with("Could not parse this file: ")
+            .starts_with("Could not parse this file (line 1): ")
     );
+    assert_eq!(unit.findings[0].line, Some(1));
 }
 
 #[test]

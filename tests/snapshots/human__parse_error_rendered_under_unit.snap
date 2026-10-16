@@ -3,6 +3,6 @@ source: tests/human.rs
 expression: plain(&r)
 ---
 broken.sql
-  error[parse-error] Could not parse this file: Invalid statement: syntax error at or near ";"
+  error[parse-error] Could not parse this file (line 1): Invalid statement: syntax error at or near ";"
 
 1 error, 0 warnings in 1 file (0 statements)

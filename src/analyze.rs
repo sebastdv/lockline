@@ -129,9 +129,14 @@ fn analyze_unit(
             report.findings.push(Finding {
                 rule: "parse-error",
                 severity: Severity::Error,
-                message: format!("Could not parse this file: {}", error.message),
+                message: match error.line {
+                    Some(line) => {
+                        format!("Could not parse this file (line {line}): {}", error.message)
+                    }
+                    None => format!("Could not parse this file: {}", error.message),
+                },
                 help: None,
-                line: None,
+                line: error.line,
             });
             return report;
         }
