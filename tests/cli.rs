@@ -70,7 +70,7 @@ fn quiet_flag_hides_clean_statements() {
         .args(["check", "tests/fixtures/clean", "--quiet"])
         .assert()
         .code(0)
-        .stdout("0 errors, 0 warnings in 2 files (3 statements)\n");
+        .stdout("0 errors, 0 warnings in 2 files (4 statements)\n");
 }
 
 #[test]
@@ -161,4 +161,17 @@ fn empty_directory_warns_but_exits_zero() {
         .code(0)
         .stderr(predicate::str::contains("warning: "))
         .stderr(predicate::str::contains("no .sql files found"));
+}
+
+#[test]
+fn warnings_do_not_fail_by_default() {
+    lockline()
+        .args(["check", "tests/fixtures/warnings"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("0 errors, 1 warning in 1 file"));
+    lockline()
+        .args(["check", "tests/fixtures/warnings", "--fail-on", "warning"])
+        .assert()
+        .code(1);
 }

@@ -477,3 +477,110 @@ fn add_unique_without_index_skips() {
         .is_empty()
     );
 }
+
+// --- Task 11: compatibility and lock_timeout ---
+
+#[test]
+fn rename_object_fires() {
+    let f = finding(
+        "ALTER TABLE users RENAME TO accounts;",
+        PerUnit,
+        "rename-object",
+    );
+    assert_eq!(
+        f.message,
+        "Renaming \"users\" breaks application code that still uses the old name while the deploy rolls out."
+    );
+    let f = finding(
+        "ALTER TABLE users RENAME COLUMN email TO mail;",
+        PerUnit,
+        "rename-object",
+    );
+    assert!(f.message.starts_with("Renaming \"email\""));
+}
+
+#[test]
+fn rename_object_skips() {
+    assert!(fired("ALTER TABLE users RENAME CONSTRAINT a TO b;", PerUnit).is_empty());
+    assert!(
+        fired(
+            "CREATE TABLE t (a int); ALTER TABLE t RENAME COLUMN a TO b;",
+            PerUnit
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn drop_object_fires() {
+    let f = finding("DROP TABLE users;", PerUnit, "drop-object");
+    assert_eq!(
+        f.message,
+        "Dropping \"users\" breaks application code that still uses it while the deploy rolls out."
+    );
+    let f = finding(
+        "ALTER TABLE users DROP COLUMN legacy;",
+        PerUnit,
+        "drop-object",
+    );
+    assert!(f.message.starts_with("Dropping \"legacy\""));
+}
+
+#[test]
+fn drop_object_skips() {
+    assert!(fired("CREATE TABLE t (a int); DROP TABLE t;", PerUnit).is_empty());
+    assert!(
+        fired(
+            "CREATE TABLE t (a int); ALTER TABLE t DROP COLUMN a;",
+            PerUnit
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn missing_lock_timeout_fires() {
+    let sql = "ALTER TABLE users ADD COLUMN a int;";
+    assert_eq!(fired_all(sql, PerUnit), ["missing-lock-timeout"]);
+    let f = finding(sql, PerUnit, "missing-lock-timeout");
+    assert_eq!(f.severity, lockline::model::Severity::Warning);
+    assert_eq!(
+        f.message,
+        "This migration takes an ACCESS EXCLUSIVE lock on \"users\" without a lock_timeout; if the lock has to wait, every query on the table queues behind it."
+    );
+}
+
+#[test]
+fn missing_lock_timeout_skips() {
+    assert!(
+        fired_all(
+            "SET lock_timeout = '5s'; ALTER TABLE users ADD COLUMN a int;",
+            PerUnit
+        )
+        .is_empty()
+    );
+    assert!(
+        fired_all(
+            "SET LOCAL lock_timeout = '5s'; ALTER TABLE users ADD COLUMN a int;",
+            PerUnit
+        )
+        .is_empty()
+    );
+    assert!(
+        fired_all(
+            "CREATE TABLE t (a int); ALTER TABLE t ADD COLUMN b int;",
+            PerUnit
+        )
+        .is_empty()
+    );
+    // SHARE is not ACCESS EXCLUSIVE.
+    assert!(!fired_all("CREATE INDEX i ON users (a);", PerUnit).contains(&"missing-lock-timeout"));
+}
+
+#[test]
+fn missing_lock_timeout_once_per_unit() {
+    let sql = "ALTER TABLE users ADD COLUMN a int; \
+               ALTER TABLE users ADD COLUMN b int; \
+               ALTER TABLE orders ADD COLUMN c int;";
+    assert_eq!(fired_all(sql, PerUnit), ["missing-lock-timeout"]);
+}

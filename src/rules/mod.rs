@@ -12,8 +12,11 @@ mod cannot_run_in_transaction;
 mod constraints;
 mod create_index_not_concurrently;
 mod drop_index_not_concurrently;
+mod drop_object;
+mod missing_lock_timeout;
 mod refresh_matview_not_concurrently;
 mod reindex_not_concurrently;
+mod rename_object;
 mod rewrite_table;
 mod set_not_null;
 
@@ -73,6 +76,9 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         Box::new(add_check_without_not_valid::AddCheckWithoutNotValid),
         Box::new(add_foreign_key_without_not_valid::AddForeignKeyWithoutNotValid),
         Box::new(add_unique_without_index::AddUniqueWithoutIndex),
+        Box::new(missing_lock_timeout::MissingLockTimeout),
+        Box::new(rename_object::RenameObject),
+        Box::new(drop_object::DropObject),
     ]
 }
 

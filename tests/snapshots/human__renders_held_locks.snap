@@ -6,6 +6,8 @@ expression: plain(&r)
   1:1  ALTER TABLE users ADD COLUMN a int
        lock   ACCESS EXCLUSIVE on users — blocks reads and writes
        cost   metadata only (fast)
+  warning[missing-lock-timeout] This migration takes an ACCESS EXCLUSIVE lock on "users" without a lock_timeout; if the lock has to wait, every query on the table queues behind it.
+       help: Add SET lock_timeout = '5s'; at the start of the migration (SET LOCAL inside a transaction) and retry on failure.
 
   2:1  CREATE INDEX CONCURRENTLY i ON orders (x)
        lock   SHARE UPDATE EXCLUSIVE on orders — allows reads and writes
@@ -22,4 +24,4 @@ expression: plain(&r)
 
   holds until commit: ACCESS EXCLUSIVE on users, SHARE on orders
 
-2 errors, 0 warnings in 1 file (3 statements)
+2 errors, 1 warning in 1 file (3 statements)

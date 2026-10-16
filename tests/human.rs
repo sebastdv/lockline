@@ -45,10 +45,13 @@ fn renders_new_table_note_and_not_analyzed() {
 #[test]
 fn quiet_hides_clean_statements() {
     let r = report(&[
-        ("clean.sql", "ALTER TABLE users ADD COLUMN nickname text;"),
+        (
+            "clean.sql",
+            "SET lock_timeout = '5s';\nALTER TABLE users ADD COLUMN nickname text;",
+        ),
         (
             "dangerous.sql",
-            "ALTER TABLE users ADD COLUMN bio text;\nCREATE INDEX i ON users (email);",
+            "SET lock_timeout = '5s';\nALTER TABLE users ADD COLUMN bio text;\nCREATE INDEX i ON users (email);",
         ),
     ]);
     let out = render_human(

@@ -35,6 +35,8 @@ examples/migrations/0002_track_logins.sql
   1:1  ALTER TABLE users ADD COLUMN last_login_at timestamptz
        lock   ACCESS EXCLUSIVE on users — blocks reads and writes
        cost   metadata only (fast)
+  warning[missing-lock-timeout] This migration takes an ACCESS EXCLUSIVE lock on "users" without a lock_timeout; if the lock has to wait, every query on the table queues behind it.
+       help: Add SET lock_timeout = '5s'; at the start of the migration (SET LOCAL inside a transaction) and retry on failure.
 
   3:1  CREATE INDEX idx_users_last_login_at ON users (last_login_at)
        lock   SHARE on users — blocks writes, allows reads
@@ -51,7 +53,7 @@ examples/migrations/0002_track_logins.sql
 
   holds until commit: ACCESS EXCLUSIVE on users
 
-2 errors, 0 warnings in 2 files (5 statements)
+2 errors, 1 warning in 2 files (5 statements)
 ```
 
 The exit code is `1` when there are errors, so it can gate a pull request.

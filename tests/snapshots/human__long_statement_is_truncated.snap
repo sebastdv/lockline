@@ -6,5 +6,7 @@ long.sql
   1:1  ALTER TABLE users ADD COLUMN a_rather_long_column_name_for_testing text, ADD CO…
        lock   ACCESS EXCLUSIVE on users — blocks reads and writes
        cost   metadata only (fast)
+  warning[missing-lock-timeout] This migration takes an ACCESS EXCLUSIVE lock on "users" without a lock_timeout; if the lock has to wait, every query on the table queues behind it.
+       help: Add SET lock_timeout = '5s'; at the start of the migration (SET LOCAL inside a transaction) and retry on failure.
 
-0 errors, 0 warnings in 1 file (1 statement)
+0 errors, 1 warning in 1 file (1 statement)

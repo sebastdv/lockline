@@ -16,6 +16,8 @@ fn rules(unit: &UnitReport) -> Vec<&'static str> {
         .iter()
         .chain(unit.statements.iter().flat_map(|s| s.findings.iter()))
         .map(|f| f.rule)
+        // missing-lock-timeout fires on most ALTER TABLEs; it has its own tests.
+        .filter(|r| *r != "missing-lock-timeout")
         .collect()
 }
 

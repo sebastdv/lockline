@@ -1,0 +1,3 @@
+ALTER TABLE users ADD COLUMN a int;
+ALTER TABLE users ADD COLUMN b int;
+ALTER TABLE users ADD COLUMN c int;

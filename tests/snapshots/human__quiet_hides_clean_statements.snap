@@ -3,11 +3,11 @@ source: tests/human.rs
 expression: out
 ---
 dangerous.sql
-  2:1  CREATE INDEX i ON users (email)
+  3:1  CREATE INDEX i ON users (email)
        lock   SHARE on users — blocks writes, allows reads
        cost   full table scan (index build)
   error[create-index-not-concurrently] Building an index without CONCURRENTLY blocks all writes to "users" until the build finishes.
        help: CREATE INDEX CONCURRENTLY i ON users USING btree (email);
              (CONCURRENTLY cannot run inside a transaction block)
 
-1 error, 0 warnings in 2 files (3 statements)
+1 error, 0 warnings in 2 files (5 statements)
