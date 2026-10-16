@@ -1,7 +1,6 @@
-use pg_query::NodeEnum;
-
-use super::{Rule, RuleCtx};
-use crate::model::{Analysis, Cost, Finding, Severity};
+use super::{Rule, RuleCtx, added_column, table_alter_cmds};
+use crate::catalog::add_column_cost;
+use crate::model::{Cost, Finding, Severity};
 
 pub struct AddColumnRewrite;
 
@@ -15,13 +14,12 @@ impl Rule for AddColumnRewrite {
     }
 
     fn check(&self, ctx: &RuleCtx) -> Option<Finding> {
-        if ctx.new_table || !matches!(ctx.stmt.node, NodeEnum::AlterTableStmt(_)) {
-            return None;
-        }
-        let Analysis::Locks(effects) = ctx.analysis else {
-            return None;
-        };
-        let effect = effects.iter().find(|e| e.cost == Cost::Rewrite)?;
+        let effect = ctx.existing_target()?;
+        // Only the ADD COLUMN itself counts: ALTER COLUMN TYPE has its own rule.
+        table_alter_cmds(&ctx.stmt.node)
+            .into_iter()
+            .filter_map(added_column)
+            .find(|column| add_column_cost(column) == Cost::Rewrite)?;
         Some(self.finding(
             format!(
                 "Adding this column rewrites \"{}\" and all its indexes while holding an ACCESS EXCLUSIVE lock.",

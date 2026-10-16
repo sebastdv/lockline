@@ -150,3 +150,185 @@ fn backfill_in_migration_skips() {
     assert!(fired("DELETE FROM users WHERE id = 1;", PerUnit).is_empty());
     assert!(fired("CREATE TABLE t (a int); UPDATE t SET a = 1;", PerUnit).is_empty());
 }
+
+// --- Task 9: columns ---
+
+#[test]
+fn add_column_not_null_without_default_fires() {
+    let sql = "ALTER TABLE users ADD COLUMN a int NOT NULL;";
+    assert_eq!(fired(sql, PerUnit), ["add-column-not-null-without-default"]);
+    let f = finding(sql, PerUnit, "add-column-not-null-without-default");
+    assert_eq!(
+        f.message,
+        "Adding a NOT NULL column without a DEFAULT fails if \"users\" has any rows."
+    );
+}
+
+#[test]
+fn add_column_not_null_without_default_skips() {
+    for sql in [
+        "ALTER TABLE users ADD COLUMN a int NOT NULL DEFAULT 0;",
+        "ALTER TABLE users ADD COLUMN a int GENERATED ALWAYS AS IDENTITY NOT NULL;",
+        "ALTER TABLE users ADD COLUMN a bigserial NOT NULL;",
+        "ALTER TABLE users ADD COLUMN a int GENERATED ALWAYS AS (id * 2) STORED NOT NULL;",
+        "CREATE TABLE t (id int); ALTER TABLE t ADD COLUMN a int NOT NULL;",
+    ] {
+        assert!(
+            !fired(sql, PerUnit).contains(&"add-column-not-null-without-default"),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn add_column_unknown_default_fires() {
+    let sql = "ALTER TABLE users ADD COLUMN code text DEFAULT make_code();";
+    assert_eq!(fired(sql, PerUnit), ["add-column-unknown-default"]);
+    let f = finding(sql, PerUnit, "add-column-unknown-default");
+    assert_eq!(
+        f.message,
+        "lockline cannot tell whether the default make_code() is volatile; if it is, \"users\" is rewritten."
+    );
+    let with_args = finding(
+        "ALTER TABLE users ADD COLUMN code text DEFAULT make_code(8);",
+        PerUnit,
+        "add-column-unknown-default",
+    );
+    assert!(with_args.message.contains("make_code(...)"));
+}
+
+#[test]
+fn add_column_unknown_default_skips() {
+    for sql in [
+        "ALTER TABLE users ADD COLUMN a text DEFAULT 'x';",
+        "ALTER TABLE users ADD COLUMN a timestamptz DEFAULT now();",
+        "CREATE TABLE t (id int); ALTER TABLE t ADD COLUMN a text DEFAULT make_code();",
+    ] {
+        assert!(fired(sql, PerUnit).is_empty(), "{sql}");
+    }
+    // Known volatile: add-column-rewrite reports it, not this rule.
+    assert_eq!(
+        fired(
+            "ALTER TABLE users ADD COLUMN a uuid DEFAULT gen_random_uuid();",
+            PerUnit
+        ),
+        ["add-column-rewrite"]
+    );
+}
+
+#[test]
+fn alter_column_type_fires() {
+    let sql = "ALTER TABLE users ALTER COLUMN email TYPE varchar(300);";
+    assert_eq!(fired(sql, PerUnit), ["alter-column-type"]);
+    let f = finding(sql, PerUnit, "alter-column-type");
+    assert_eq!(
+        f.message,
+        "Changing the type of \"email\" rewrites \"users\" and its indexes under an ACCESS EXCLUSIVE lock."
+    );
+    let help = f.help.unwrap();
+    assert!(help.starts_with("If this only widens varchar(n) or numeric precision"));
+    assert!(help.contains("Otherwise add a new column"));
+
+    let known = "CREATE TABLE users (email varchar(300)); \
+                 ALTER TABLE users ADD COLUMN x int; \
+                 SELECT 1;";
+    let narrowing = format!("{known} ALTER TABLE users ALTER COLUMN email TYPE varchar(100);");
+    // users was created in this unit, so nothing fires; check the help text through a
+    // second unit instead.
+    assert!(fired(&narrowing, PerUnit).is_empty());
+}
+
+#[test]
+fn alter_column_type_knows_the_previous_type_across_units() {
+    let units = [
+        MigrationUnit {
+            name: "0001.sql".into(),
+            sql: "CREATE TABLE users (email varchar(100));".into(),
+        },
+        MigrationUnit {
+            name: "0002.sql".into(),
+            sql: "ALTER TABLE users ALTER COLUMN email TYPE varchar(200);".into(),
+        },
+        MigrationUnit {
+            name: "0003.sql".into(),
+            sql: "ALTER TABLE users ALTER COLUMN email TYPE varchar(50);".into(),
+        },
+    ];
+    let report = analyze(&units, &Config::default());
+    let rules_of = |i: usize| -> Vec<&str> {
+        report.units[i]
+            .statements
+            .iter()
+            .flat_map(|s| &s.findings)
+            .map(|f| f.rule)
+            .filter(|r| *r != "missing-lock-timeout")
+            .collect()
+    };
+    assert!(rules_of(1).is_empty(), "widening is safe");
+    assert_eq!(rules_of(2), ["alter-column-type"]);
+    let help = report.units[2].statements[0].findings[0]
+        .help
+        .clone()
+        .unwrap();
+    assert_eq!(
+        help,
+        "Add a new column, backfill it in batches, and switch reads and writes over."
+    );
+}
+
+#[test]
+fn set_not_null_fires() {
+    let sql = "ALTER TABLE users ALTER COLUMN email SET NOT NULL;";
+    assert_eq!(fired(sql, PerUnit), ["set-not-null"]);
+    let help = finding(sql, PerUnit, "set-not-null").help.unwrap();
+    assert_eq!(
+        help,
+        "ALTER TABLE users ADD CONSTRAINT users_email_not_null CHECK (email IS NOT NULL) NOT VALID;\n\
+         ALTER TABLE users VALIDATE CONSTRAINT users_email_not_null;\n\
+         ALTER TABLE users ALTER COLUMN email SET NOT NULL;\n\
+         ALTER TABLE users DROP CONSTRAINT users_email_not_null;"
+    );
+}
+
+#[test]
+fn set_not_null_skips() {
+    let units = [
+        MigrationUnit {
+            name: "0001.sql".into(),
+            sql: "CREATE TABLE users (email text);".into(),
+        },
+        MigrationUnit {
+            name: "0002.sql".into(),
+            sql: "ALTER TABLE users ADD CONSTRAINT c CHECK (email IS NOT NULL) NOT VALID;".into(),
+        },
+        MigrationUnit {
+            name: "0003.sql".into(),
+            sql: "ALTER TABLE users VALIDATE CONSTRAINT c; \
+                  ALTER TABLE users ALTER COLUMN email SET NOT NULL;"
+                .into(),
+        },
+    ];
+    let report = analyze(&units, &Config::default());
+    assert!(
+        report.units[2]
+            .statements
+            .iter()
+            .flat_map(|s| &s.findings)
+            .all(|f| f.rule != "set-not-null")
+    );
+    assert!(
+        fired(
+            "CREATE TABLE t (a int); ALTER TABLE t ALTER COLUMN a SET NOT NULL;",
+            PerUnit
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn add_column_rewrite_ignores_other_subcommands() {
+    assert_eq!(
+        fired("ALTER TABLE users ALTER COLUMN a TYPE bigint;", PerUnit),
+        ["alter-column-type"]
+    );
+}

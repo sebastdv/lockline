@@ -88,3 +88,27 @@ pub(crate) fn last_name(names: &[Node]) -> &str {
         })
         .unwrap_or("")
 }
+
+/// How to name the first function call of unknown volatility in an expression, as
+/// `name()` or `name(...)`.
+pub fn unknown_call(expr: &Node) -> Option<String> {
+    match expr.node.as_ref()? {
+        NodeEnum::FuncCall(call) => {
+            let name = last_name(&call.funcname);
+            if !VOLATILE_FUNCTIONS.contains(&name) && !STABLE_FUNCTIONS.contains(&name) {
+                let args = if call.args.is_empty() { "" } else { "..." };
+                return Some(format!("{name}({args})"));
+            }
+            call.args.iter().find_map(unknown_call)
+        }
+        NodeEnum::TypeCast(cast) => cast.arg.as_deref().and_then(unknown_call),
+        NodeEnum::AExpr(e) => e
+            .lexpr
+            .as_deref()
+            .and_then(unknown_call)
+            .or_else(|| e.rexpr.as_deref().and_then(unknown_call)),
+        NodeEnum::BoolExpr(e) => e.args.iter().find_map(unknown_call),
+        NodeEnum::AArrayExpr(e) => e.elements.iter().find_map(unknown_call),
+        _ => None,
+    }
+}

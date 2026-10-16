@@ -612,7 +612,7 @@ fn add_column_effect(column: &ColumnDef) -> CmdEffect {
 }
 
 /// Cost of the column itself: a rewrite when every row needs a computed value.
-fn add_column_cost(column: &ColumnDef) -> Cost {
+pub(crate) fn add_column_cost(column: &ColumnDef) -> Cost {
     let type_name = column
         .type_name
         .as_ref()

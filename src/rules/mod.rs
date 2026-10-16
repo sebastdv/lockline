@@ -1,6 +1,9 @@
 //! Lint rules. Each rule looks at one statement in context and may report one finding.
 
+mod add_column_not_null_without_default;
 mod add_column_rewrite;
+mod add_column_unknown_default;
+mod alter_column_type;
 mod backfill_in_migration;
 mod cannot_run_in_transaction;
 mod create_index_not_concurrently;
@@ -8,6 +11,10 @@ mod drop_index_not_concurrently;
 mod refresh_matview_not_concurrently;
 mod reindex_not_concurrently;
 mod rewrite_table;
+mod set_not_null;
+
+use pg_query::NodeEnum;
+use pg_query::protobuf::{AlterTableCmd, AlterTableType, ColumnDef, Constraint, ObjectType};
 
 use crate::model::{Analysis, Effect, Finding, Severity};
 use crate::parse::Statement;
@@ -55,6 +62,10 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         Box::new(rewrite_table::RewriteTable),
         Box::new(refresh_matview_not_concurrently::RefreshMatviewNotConcurrently),
         Box::new(backfill_in_migration::BackfillInMigration),
+        Box::new(add_column_not_null_without_default::AddColumnNotNullWithoutDefault),
+        Box::new(add_column_unknown_default::AddColumnUnknownDefault),
+        Box::new(alter_column_type::AlterColumnType),
+        Box::new(set_not_null::SetNotNull),
     ]
 }
 
@@ -66,4 +77,42 @@ impl RuleCtx<'_> {
             _ => None,
         }
     }
+}
+
+/// Subcommands of an `ALTER TABLE` on a table (not a view, index, type…).
+pub(crate) fn table_alter_cmds(node: &NodeEnum) -> Vec<&AlterTableCmd> {
+    let NodeEnum::AlterTableStmt(stmt) = node else {
+        return Vec::new();
+    };
+    if stmt.objtype != ObjectType::ObjectTable as i32 {
+        return Vec::new();
+    }
+    stmt.cmds
+        .iter()
+        .filter_map(|c| match c.node.as_ref() {
+            Some(NodeEnum::AlterTableCmd(cmd)) => Some(&**cmd),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The column added by an `ADD COLUMN` subcommand.
+pub(crate) fn added_column(cmd: &AlterTableCmd) -> Option<&ColumnDef> {
+    if cmd.subtype != AlterTableType::AtAddColumn as i32 {
+        return None;
+    }
+    match cmd.def.as_ref()?.node.as_ref()? {
+        NodeEnum::ColumnDef(column) => Some(column),
+        _ => None,
+    }
+}
+
+pub(crate) fn column_constraints(column: &ColumnDef) -> impl Iterator<Item = &Constraint> {
+    column
+        .constraints
+        .iter()
+        .filter_map(|c| match c.node.as_ref() {
+            Some(NodeEnum::Constraint(c)) => Some(&**c),
+            _ => None,
+        })
 }
