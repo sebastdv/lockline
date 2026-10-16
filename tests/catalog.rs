@@ -2,6 +2,7 @@ use lockline::catalog::{analyze_statement, forbidden_in_transaction};
 use lockline::locks::LockMode;
 use lockline::model::{Analysis, Cost, Effect, TableRef};
 use lockline::parse::parse_sql;
+use lockline::schema::Schema;
 
 fn node(sql: &str) -> pg_query::NodeEnum {
     let mut stmts = parse_sql(sql).unwrap();
@@ -10,7 +11,30 @@ fn node(sql: &str) -> pg_query::NodeEnum {
 }
 
 fn analyze(sql: &str) -> Analysis {
-    analyze_statement(&node(sql))
+    analyze_statement(&node(sql), &Schema::default())
+}
+
+/// Analyzes `sql` after `setup` has been observed by the virtual schema.
+fn analyze_after(setup: &str, sql: &str) -> Analysis {
+    let mut schema = Schema::default();
+    for stmt in parse_sql(setup).unwrap() {
+        schema.observe(&stmt.node);
+    }
+    analyze_statement(&node(sql), &schema)
+}
+
+fn effects(sql: &str) -> Vec<Effect> {
+    match analyze(sql) {
+        Analysis::Locks(effects) => effects,
+        other => panic!("expected locks for {sql:?}, got {other:?}"),
+    }
+}
+
+fn table(name: &str) -> TableRef {
+    TableRef {
+        schema: None,
+        name: name.into(),
+    }
 }
 
 fn single_effect(sql: &str) -> Effect {
@@ -129,22 +153,6 @@ fn begin_has_no_table_lock() {
 }
 
 #[test]
-fn drop_column_is_not_analyzed_yet() {
-    assert_eq!(
-        analyze("ALTER TABLE users DROP COLUMN x"),
-        Analysis::NotAnalyzed
-    );
-}
-
-#[test]
-fn mixed_alter_table_is_not_analyzed_yet() {
-    assert_eq!(
-        analyze("ALTER TABLE users ADD COLUMN a int, DROP COLUMN b"),
-        Analysis::NotAnalyzed
-    );
-}
-
-#[test]
 fn forbidden_in_transaction_labels() {
     let cases = [
         (
@@ -184,15 +192,274 @@ fn create_table_that_locks_other_tables_is_not_analyzed_yet() {
 }
 
 #[test]
-fn add_column_with_inline_constraints_is_not_analyzed_yet() {
+fn alter_table_catalog() {
+    use LockMode::*;
+    let cases = [
+        (
+            "ALTER TABLE users DROP COLUMN a",
+            AccessExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN a DROP NOT NULL",
+            AccessExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN a SET DEFAULT 1",
+            AccessExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN a DROP DEFAULT",
+            AccessExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users DROP CONSTRAINT c",
+            AccessExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN a TYPE bigint",
+            AccessExclusive,
+            Cost::Rewrite,
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN a SET NOT NULL",
+            AccessExclusive,
+            Cost::Scan,
+        ),
+        (
+            "ALTER TABLE users ADD CONSTRAINT c CHECK (a > 0)",
+            AccessExclusive,
+            Cost::Scan,
+        ),
+        (
+            "ALTER TABLE users ADD CONSTRAINT c CHECK (a > 0) NOT VALID",
+            AccessExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users ADD CONSTRAINT fk FOREIGN KEY (org_id) REFERENCES orgs (id)",
+            ShareRowExclusive,
+            Cost::Scan,
+        ),
+        (
+            "ALTER TABLE users ADD CONSTRAINT fk FOREIGN KEY (org_id) REFERENCES orgs (id) NOT VALID",
+            ShareRowExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users ADD CONSTRAINT u UNIQUE (email)",
+            AccessExclusive,
+            Cost::Scan,
+        ),
+        (
+            "ALTER TABLE users ADD CONSTRAINT u UNIQUE USING INDEX users_email_idx",
+            AccessExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users ADD PRIMARY KEY (id)",
+            AccessExclusive,
+            Cost::Scan,
+        ),
+        (
+            "ALTER TABLE users ADD CONSTRAINT x EXCLUDE USING gist (r WITH &&)",
+            AccessExclusive,
+            Cost::Scan,
+        ),
+        (
+            "ALTER TABLE users VALIDATE CONSTRAINT c",
+            ShareUpdateExclusive,
+            Cost::Scan,
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN a SET STATISTICS 100",
+            ShareUpdateExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN a SET (n_distinct = 10)",
+            ShareUpdateExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN a RESET (n_distinct)",
+            ShareUpdateExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users SET (fillfactor = 70)",
+            ShareUpdateExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users RESET (fillfactor)",
+            ShareUpdateExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users DETACH PARTITION users_2026",
+            AccessExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users DETACH PARTITION users_2026 CONCURRENTLY",
+            ShareUpdateExclusive,
+            Cost::Metadata,
+        ),
+        (
+            "ALTER TABLE users ADD COLUMN code text UNIQUE",
+            AccessExclusive,
+            Cost::Scan,
+        ),
+        (
+            "ALTER TABLE users ADD COLUMN id2 int PRIMARY KEY",
+            AccessExclusive,
+            Cost::Scan,
+        ),
+        (
+            "ALTER TABLE users ADD COLUMN status text DEFAULT 'a' CHECK (status <> '')",
+            AccessExclusive,
+            Cost::Scan,
+        ),
+    ];
+    for (sql, lock, cost) in cases {
+        let e = &effects(sql)[0];
+        assert_eq!(e.table, users(), "{sql}");
+        assert_eq!((e.lock, e.cost), (lock, cost), "{sql}");
+    }
+}
+
+#[test]
+fn notes_explain_the_cost() {
+    let unique = &effects("ALTER TABLE users ADD CONSTRAINT u UNIQUE (email)")[0];
+    assert_eq!(unique.note.as_deref(), Some("builds an index"));
+    let check = &effects("ALTER TABLE users ADD COLUMN s text CHECK (s <> '')")[0];
+    assert_eq!(check.note.as_deref(), Some("validates every row"));
+}
+
+#[test]
+fn foreign_key_locks_the_referenced_table() {
+    let e =
+        effects("ALTER TABLE users ADD CONSTRAINT fk FOREIGN KEY (org_id) REFERENCES orgs (id)");
+    assert_eq!(e.len(), 2);
+    assert_eq!(e[1].table, table("orgs"));
+    assert_eq!(
+        (e[1].lock, e[1].cost),
+        (LockMode::ShareRowExclusive, Cost::Metadata)
+    );
+}
+
+#[test]
+fn add_column_with_inline_references_has_two_effects() {
+    let e = effects("ALTER TABLE posts ADD COLUMN user_id bigint REFERENCES users (id)");
+    assert_eq!(e[0].table, table("posts"));
+    assert_eq!(
+        (e[0].lock, e[0].cost),
+        (LockMode::AccessExclusive, Cost::Scan)
+    );
+    assert_eq!(e[0].note.as_deref(), Some("validates the foreign key"));
+    assert_eq!(e[1].table, users());
+    assert_eq!(
+        (e[1].lock, e[1].cost),
+        (LockMode::ShareRowExclusive, Cost::Metadata)
+    );
+}
+
+#[test]
+fn attach_partition_locks_parent_and_partition() {
+    let e = effects(
+        "ALTER TABLE events ATTACH PARTITION events_2026 FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')",
+    );
+    assert_eq!(e[0].table, table("events"));
+    assert_eq!(
+        (e[0].lock, e[0].cost),
+        (LockMode::ShareUpdateExclusive, Cost::Metadata)
+    );
+    assert_eq!(e[1].table, table("events_2026"));
+    assert_eq!(
+        (e[1].lock, e[1].cost),
+        (LockMode::AccessExclusive, Cost::Scan)
+    );
+    assert_eq!(
+        e[1].note.as_deref(),
+        Some("validates the partition constraint")
+    );
+}
+
+#[test]
+fn several_subcommands_take_the_strongest_lock_and_cost() {
+    let e = effects(
+        "ALTER TABLE users ADD CONSTRAINT fk FOREIGN KEY (org_id) REFERENCES orgs (id) NOT VALID, \
+         ADD CONSTRAINT fk2 FOREIGN KEY (team_id) REFERENCES orgs (id), DROP COLUMN legacy",
+    );
+    assert_eq!(
+        (e[0].lock, e[0].cost),
+        (LockMode::AccessExclusive, Cost::Scan)
+    );
+    assert_eq!(e.len(), 2, "orgs appears once: {e:?}");
+}
+
+#[test]
+fn alter_column_type_widening_uses_schema() {
+    let setup = "CREATE TABLE users (email varchar(100));";
+    let cost = |sql: &str| match analyze_after(setup, sql) {
+        Analysis::Locks(e) => e[0].cost,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        cost("ALTER TABLE users ALTER COLUMN email TYPE varchar(200)"),
+        Cost::Metadata
+    );
+    assert_eq!(
+        cost("ALTER TABLE users ALTER COLUMN email TYPE varchar(50)"),
+        Cost::Rewrite
+    );
+    assert_eq!(
+        cost("ALTER TABLE users ALTER COLUMN email TYPE varchar(200) USING email::varchar(200)"),
+        Cost::Rewrite
+    );
+    assert_eq!(
+        single_effect("ALTER TABLE users ALTER COLUMN email TYPE varchar(200)").cost,
+        Cost::Rewrite
+    );
+}
+
+#[test]
+fn set_not_null_after_validated_check_is_metadata() {
+    let setup = "CREATE TABLE users (email text); \
+                 ALTER TABLE users ADD CONSTRAINT c CHECK (email IS NOT NULL) NOT VALID; \
+                 ALTER TABLE users VALIDATE CONSTRAINT c;";
+    let Analysis::Locks(e) =
+        analyze_after(setup, "ALTER TABLE users ALTER COLUMN email SET NOT NULL")
+    else {
+        panic!("expected locks");
+    };
+    assert_eq!(e[0].cost, Cost::Metadata);
+}
+
+#[test]
+fn non_table_alter_is_not_analyzed() {
     for sql in [
-        "ALTER TABLE posts ADD COLUMN user_id bigint REFERENCES users (id)",
-        "ALTER TABLE posts ADD COLUMN code text UNIQUE",
-        "ALTER TABLE posts ADD COLUMN id2 int PRIMARY KEY",
-        "ALTER TABLE posts ADD COLUMN status text DEFAULT 'a' CHECK (status <> '')",
+        "ALTER TYPE addr ADD ATTRIBUTE zip text",
+        "ALTER FOREIGN TABLE ft ADD COLUMN c int",
+        "ALTER INDEX i SET (fillfactor = 70)",
     ] {
         assert_eq!(analyze(sql), Analysis::NotAnalyzed, "{sql}");
     }
-    let e = single_effect("ALTER TABLE posts ADD COLUMN title text NOT NULL DEFAULT ''");
-    assert_eq!(e.cost, Cost::Metadata);
+}
+
+#[test]
+fn unknown_subcommand_is_not_analyzed() {
+    assert_eq!(
+        analyze("ALTER TABLE users ENABLE ROW LEVEL SECURITY"),
+        Analysis::NotAnalyzed
+    );
+    assert_eq!(
+        analyze("ALTER TABLE users ADD COLUMN a int, ENABLE ROW LEVEL SECURITY"),
+        Analysis::NotAnalyzed
+    );
 }

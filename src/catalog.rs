@@ -1,15 +1,17 @@
 //! Maps a parsed statement to the locks it takes and the work it does on each table.
 //!
-//! Milestone 1 covers indexes and `ALTER TABLE ... ADD COLUMN`; everything else is reported
-//! as `NotAnalyzed` rather than guessed.
+//! Anything outside the catalog is reported as `NotAnalyzed` rather than guessed.
+//! `effects[0]` is always the relation the statement changes; other tables follow.
 
 use pg_query::NodeEnum;
 use pg_query::protobuf::{
-    AlterTableCmd, AlterTableStmt, AlterTableType, ColumnDef, ConstrType, CreateStmt,
+    AlterTableCmd, AlterTableStmt, AlterTableType, ColumnDef, ConstrType, Constraint, CreateStmt,
+    ObjectType,
 };
 
 use crate::locks::LockMode;
 use crate::model::{Analysis, Cost, Effect, TableRef};
+use crate::schema::{Schema, TypeSpec, is_safe_widening};
 use crate::volatility::{Volatility, classify_default, last_name};
 
 const SERIAL_TYPES: &[&str] = &[
@@ -21,7 +23,7 @@ const SERIAL_TYPES: &[&str] = &[
     "serial8",
 ];
 
-pub fn analyze_statement(node: &NodeEnum) -> Analysis {
+pub fn analyze_statement(node: &NodeEnum, schema: &Schema) -> Analysis {
     match node {
         NodeEnum::IndexStmt(stmt) => {
             let Some(relation) = &stmt.relation else {
@@ -39,7 +41,7 @@ pub fn analyze_statement(node: &NodeEnum) -> Analysis {
                 Effect::new(TableRef::from_range_var(relation), lock, Cost::Scan).with_note(note),
             ])
         }
-        NodeEnum::AlterTableStmt(stmt) => analyze_alter_table(stmt),
+        NodeEnum::AlterTableStmt(stmt) => analyze_alter_table(stmt, schema),
         // These lock existing relations (the parent, the referenced table, the old view);
         // milestone 2 models them. Until then lockline does not claim they are lock-free.
         NodeEnum::CreateStmt(stmt) if locks_other_tables(stmt) => Analysis::NotAnalyzed,
@@ -92,58 +94,213 @@ fn locks_other_tables(stmt: &CreateStmt) -> bool {
             })
 }
 
-fn analyze_alter_table(stmt: &AlterTableStmt) -> Analysis {
+fn analyze_alter_table(stmt: &AlterTableStmt, schema: &Schema) -> Analysis {
+    if stmt.objtype != ObjectType::ObjectTable as i32 {
+        return Analysis::NotAnalyzed;
+    }
     let Some(relation) = &stmt.relation else {
         return Analysis::NotAnalyzed;
     };
-    let mut cost = Cost::Metadata;
+    let table = TableRef::from_range_var(relation);
+    let mut main = Effect::new(table.clone(), LockMode::AccessShare, Cost::Metadata);
+    let mut extra: Vec<Effect> = Vec::new();
     let mut commands = 0;
     for cmd in alter_cmds(stmt) {
         commands += 1;
-        if cmd.subtype != AlterTableType::AtAddColumn as i32 {
+        let Some(step) = alter_cmd_effect(cmd, &table, schema) else {
             return Analysis::NotAnalyzed;
+        };
+        main.lock = main.lock.max(step.lock);
+        if step.cost > main.cost || (step.cost == main.cost && main.note.is_none()) {
+            main.cost = step.cost;
+            main.note = step.note.map(str::to_string).or(main.note);
         }
-        let Some(NodeEnum::ColumnDef(column)) = cmd.def.as_ref().and_then(|d| d.node.as_ref())
-        else {
-            return Analysis::NotAnalyzed;
-        };
-        let Some(column_cost) = add_column_cost(column) else {
-            return Analysis::NotAnalyzed;
-        };
-        cost = cost.max(column_cost);
+        for effect in step.extra {
+            match extra.iter_mut().find(|e| e.table == effect.table) {
+                Some(existing) => existing.lock = existing.lock.max(effect.lock),
+                None => extra.push(effect),
+            }
+        }
     }
     if commands == 0 {
         return Analysis::NotAnalyzed;
     }
-    Analysis::Locks(vec![Effect::new(
-        TableRef::from_range_var(relation),
-        LockMode::AccessExclusive,
-        cost,
-    )])
+    let mut effects = vec![main];
+    effects.extend(extra);
+    Analysis::Locks(effects)
 }
 
-/// Inline constraints that validate rows, build an index or lock another table.
-/// Milestone 2 models them; until then the whole ALTER TABLE is `NotAnalyzed`.
-const UNMODELED_COLUMN_CONSTRAINTS: &[ConstrType] = &[
-    ConstrType::ConstrCheck,
-    ConstrType::ConstrPrimary,
-    ConstrType::ConstrUnique,
-    ConstrType::ConstrExclusion,
-    ConstrType::ConstrForeign,
-];
+/// What one ALTER TABLE subcommand does to the altered table, plus locks on other tables.
+struct CmdEffect {
+    lock: LockMode,
+    cost: Cost,
+    note: Option<&'static str>,
+    extra: Vec<Effect>,
+}
 
-/// `None` when the column carries a constraint lockline does not model yet.
-fn add_column_cost(column: &ColumnDef) -> Option<Cost> {
-    if constraint_types(column).any(|t| UNMODELED_COLUMN_CONSTRAINTS.iter().any(|u| *u as i32 == t))
-    {
-        return None;
+impl CmdEffect {
+    fn new(lock: LockMode, cost: Cost) -> Self {
+        CmdEffect {
+            lock,
+            cost,
+            note: None,
+            extra: Vec::new(),
+        }
     }
+
+    fn note(mut self, note: &'static str) -> Self {
+        self.note = Some(note);
+        self
+    }
+}
+
+/// `None` for subcommands outside the catalog: the whole statement is then not analyzed.
+fn alter_cmd_effect(cmd: &AlterTableCmd, table: &TableRef, schema: &Schema) -> Option<CmdEffect> {
+    use AlterTableType::*;
+    use LockMode::*;
+    let def = cmd.def.as_ref().and_then(|d| d.node.as_ref());
+    let effect = match AlterTableType::try_from(cmd.subtype).ok()? {
+        AtAddColumn => {
+            let Some(NodeEnum::ColumnDef(column)) = def else {
+                return None;
+            };
+            add_column_effect(column)
+        }
+        AtDropColumn | AtDropNotNull | AtColumnDefault | AtDropConstraint => {
+            CmdEffect::new(AccessExclusive, Cost::Metadata)
+        }
+        AtAlterColumnType => {
+            let Some(NodeEnum::ColumnDef(column)) = def else {
+                return None;
+            };
+            let new_type = column.type_name.as_ref().map(TypeSpec::from_type_name);
+            let widening = column.raw_default.is_none()
+                && match (schema.column_type(table, &cmd.name), &new_type) {
+                    (Some(old), Some(new)) => is_safe_widening(old, new),
+                    _ => false,
+                };
+            let cost = if widening {
+                Cost::Metadata
+            } else {
+                Cost::Rewrite
+            };
+            CmdEffect::new(AccessExclusive, cost)
+        }
+        AtSetNotNull => {
+            let cost = if schema.has_validated_not_null_check(table, &cmd.name) {
+                Cost::Metadata
+            } else {
+                Cost::Scan
+            };
+            CmdEffect::new(AccessExclusive, cost)
+        }
+        AtAddConstraint => {
+            let Some(NodeEnum::Constraint(c)) = def else {
+                return None;
+            };
+            add_constraint_effect(c)?
+        }
+        AtValidateConstraint => CmdEffect::new(ShareUpdateExclusive, Cost::Scan),
+        AtSetStatistics | AtSetOptions | AtResetOptions | AtSetRelOptions | AtResetRelOptions => {
+            CmdEffect::new(ShareUpdateExclusive, Cost::Metadata)
+        }
+        AtAttachPartition => {
+            let Some(NodeEnum::PartitionCmd(p)) = def else {
+                return None;
+            };
+            let partition = TableRef::from_range_var(p.name.as_ref()?);
+            let mut effect = CmdEffect::new(ShareUpdateExclusive, Cost::Metadata);
+            effect.extra.push(
+                Effect::new(partition, AccessExclusive, Cost::Scan)
+                    .with_note("validates the partition constraint"),
+            );
+            effect
+        }
+        AtDetachPartition => {
+            let concurrent = matches!(def, Some(NodeEnum::PartitionCmd(p)) if p.concurrent);
+            let lock = if concurrent {
+                ShareUpdateExclusive
+            } else {
+                AccessExclusive
+            };
+            CmdEffect::new(lock, Cost::Metadata)
+        }
+        _ => return None,
+    };
+    Some(effect)
+}
+
+fn add_constraint_effect(c: &Constraint) -> Option<CmdEffect> {
+    use LockMode::*;
+    let validated = |lock| {
+        if c.skip_validation {
+            CmdEffect::new(lock, Cost::Metadata)
+        } else {
+            CmdEffect::new(lock, Cost::Scan)
+        }
+    };
+    let effect = match ConstrType::try_from(c.contype).ok()? {
+        ConstrType::ConstrCheck => validated(AccessExclusive),
+        ConstrType::ConstrForeign => {
+            let mut effect = validated(ShareRowExclusive);
+            effect.extra.push(referenced_table_effect(c)?);
+            effect
+        }
+        ConstrType::ConstrUnique | ConstrType::ConstrPrimary => {
+            if c.indexname.is_empty() {
+                CmdEffect::new(AccessExclusive, Cost::Scan).note("builds an index")
+            } else {
+                CmdEffect::new(AccessExclusive, Cost::Metadata)
+            }
+        }
+        ConstrType::ConstrExclusion => {
+            CmdEffect::new(AccessExclusive, Cost::Scan).note("builds an index")
+        }
+        _ => return None,
+    };
+    Some(effect)
+}
+
+fn referenced_table_effect(c: &Constraint) -> Option<Effect> {
+    let referenced = TableRef::from_range_var(c.pktable.as_ref()?);
+    Some(Effect::new(
+        referenced,
+        LockMode::ShareRowExclusive,
+        Cost::Metadata,
+    ))
+}
+
+fn add_column_effect(column: &ColumnDef) -> CmdEffect {
+    let mut effect = CmdEffect::new(LockMode::AccessExclusive, add_column_cost(column));
+    for constraint in &column.constraints {
+        let Some(NodeEnum::Constraint(c)) = constraint.node.as_ref() else {
+            continue;
+        };
+        let note = match ConstrType::try_from(c.contype) {
+            Ok(ConstrType::ConstrCheck | ConstrType::ConstrExclusion) => "validates every row",
+            Ok(ConstrType::ConstrUnique | ConstrType::ConstrPrimary) => "builds an index",
+            Ok(ConstrType::ConstrForeign) => {
+                effect.extra.extend(referenced_table_effect(c));
+                "validates the foreign key"
+            }
+            _ => continue,
+        };
+        if effect.cost < Cost::Scan {
+            effect.cost = Cost::Scan;
+            effect.note = Some(note);
+        }
+    }
+    effect
+}
+
+/// Cost of the column itself: a rewrite when every row needs a computed value.
+fn add_column_cost(column: &ColumnDef) -> Cost {
     let type_name = column
         .type_name
         .as_ref()
         .map_or("", |t| last_name(&t.names));
     if SERIAL_TYPES.contains(&type_name) {
-        return Some(Cost::Rewrite);
+        return Cost::Rewrite;
     }
     let mut defaults = column.raw_default.iter().map(|b| &**b).collect::<Vec<_>>();
     for constraint in &column.constraints {
@@ -153,7 +310,7 @@ fn add_column_cost(column: &ColumnDef) -> Option<Cost> {
         if c.contype == ConstrType::ConstrIdentity as i32
             || c.contype == ConstrType::ConstrGenerated as i32
         {
-            return Some(Cost::Rewrite);
+            return Cost::Rewrite;
         }
         if c.contype == ConstrType::ConstrDefault as i32 {
             defaults.extend(c.raw_expr.as_deref());
@@ -163,9 +320,9 @@ fn add_column_cost(column: &ColumnDef) -> Option<Cost> {
         .into_iter()
         .any(|d| classify_default(d) == Volatility::Volatile)
     {
-        Some(Cost::Rewrite)
+        Cost::Rewrite
     } else {
-        Some(Cost::Metadata)
+        Cost::Metadata
     }
 }
 

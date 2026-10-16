@@ -226,3 +226,20 @@ fn effect_new_table_flag() {
     };
     assert!(effects[0].new_table);
 }
+
+#[test]
+fn per_effect_new_table() {
+    let unit = run(
+        "CREATE TABLE new_orders (id int, user_id int); \
+         ALTER TABLE new_orders ADD CONSTRAINT fk FOREIGN KEY (user_id) REFERENCES users (id);",
+        TransactionMode::PerUnit,
+    );
+    let stmt = &unit.statements[1];
+    let Analysis::Locks(effects) = &stmt.analysis else {
+        panic!("expected locks");
+    };
+    assert!(effects[0].new_table);
+    assert!(!effects[1].new_table);
+    assert!(!stmt.new_table);
+    assert!(rules(&unit).is_empty());
+}

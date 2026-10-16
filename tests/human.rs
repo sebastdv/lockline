@@ -37,7 +37,7 @@ fn renders_new_table_note_and_not_analyzed() {
         "0001_init.sql",
         "CREATE TABLE users (id bigint PRIMARY KEY, email text);\n\
          CREATE INDEX idx_users_email ON users (email);\n\
-         ALTER TABLE users DROP COLUMN email;\n",
+         GRANT SELECT ON users TO app;\n",
     )]);
     insta::assert_snapshot!(plain(&r));
 }

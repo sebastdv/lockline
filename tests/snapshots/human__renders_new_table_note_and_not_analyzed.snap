@@ -9,7 +9,7 @@ expression: plain(&r)
        lock   SHARE on users — blocks writes, allows reads (new table)
        cost   full table scan (index build)
 
-  3:1  ALTER TABLE users DROP COLUMN email
+  3:1  GRANT SELECT ON users TO app
        lock   not analyzed
 
 0 errors, 0 warnings in 1 file (3 statements, 1 not analyzed)

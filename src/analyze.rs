@@ -148,7 +148,7 @@ fn analyze_unit(
 
     let mut ctx = UnitContext::new(config.transaction);
     for stmt in &statements {
-        let mut analysis = analyze_statement(&stmt.node);
+        let mut analysis = analyze_statement(&stmt.node, schema);
         if let Analysis::Locks(effects) = &mut analysis {
             for effect in effects.iter_mut() {
                 effect.new_table = ctx.created_tables.contains(&effect.table);
