@@ -14,4 +14,4 @@ migrations/0007_add_email_index.sql
        lock   ACCESS EXCLUSIVE on users — blocks reads and writes
        cost   metadata only (fast)
 
-1 error, 0 warnings in 1 file (2 statements analyzed)
+1 error, 0 warnings in 1 file (2 statements)

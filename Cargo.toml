@@ -2,9 +2,9 @@
 name = "lockline"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 description = "Explains the locks your PostgreSQL migrations take and flags the dangerous ones"
-repository = ""
 keywords = ["postgres", "postgresql", "migrations", "linter", "locks"]
 categories = ["command-line-utilities", "database", "development-tools"]
 

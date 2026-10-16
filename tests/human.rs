@@ -65,7 +65,7 @@ fn quiet_hides_clean_statements() {
 fn pluralization_in_summary() {
     let one = plain(&report(&[("a.sql", "SELECT 1;")]));
     assert!(
-        one.ends_with("0 errors, 0 warnings in 1 file (1 statement analyzed)\n"),
+        one.ends_with("0 errors, 0 warnings in 1 file (1 statement, 1 not analyzed)\n"),
         "{one}"
     );
     let many = plain(&report(&[
@@ -73,7 +73,7 @@ fn pluralization_in_summary() {
         ("b.sql", "SELECT 1; SELECT 2;"),
     ]));
     assert!(
-        many.ends_with("1 error, 0 warnings in 2 files (3 statements analyzed)\n"),
+        many.ends_with("1 error, 0 warnings in 2 files (3 statements, 2 not analyzed)\n"),
         "{many}"
     );
 }

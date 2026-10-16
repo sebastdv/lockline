@@ -7,4 +7,4 @@ long.sql
        lock   ACCESS EXCLUSIVE on users — blocks reads and writes
        cost   metadata only (fast)
 
-0 errors, 0 warnings in 1 file (1 statement analyzed)
+0 errors, 0 warnings in 1 file (1 statement)

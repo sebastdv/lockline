@@ -1,4 +1,4 @@
-use lockline::model::Severity;
+use lockline::model::{Analysis, Severity};
 use lockline::{Config, Counts, MigrationUnit, TransactionMode, UnitReport, analyze};
 
 fn run(sql: &str, mode: TransactionMode) -> UnitReport {
@@ -163,8 +163,10 @@ fn counts_and_max_severity() {
         Counts {
             errors: 1,
             warnings: 0,
+            suppressed: 0,
             files: 2,
-            statements: 3
+            statements: 3,
+            not_analyzed: 2
         }
     );
     assert_eq!(report.max_severity(), Some(Severity::Error));
@@ -199,4 +201,27 @@ fn tables_created_from_queries_are_new() {
         TransactionMode::PerUnit,
     );
     assert_eq!(rules(&maybe_existing), ["create-index-not-concurrently"]);
+}
+
+#[test]
+fn counts_not_analyzed() {
+    let units = [MigrationUnit {
+        name: "m.sql".into(),
+        sql: "SELECT 1; ALTER TABLE users ADD COLUMN a int;".into(),
+    }];
+    let counts = analyze(&units, &Config::default()).counts();
+    assert_eq!(counts.not_analyzed, 1);
+    assert_eq!(counts.statements, 2);
+}
+
+#[test]
+fn effect_new_table_flag() {
+    let unit = run(
+        "CREATE TABLE users (id int); CREATE INDEX i ON users (id);",
+        TransactionMode::PerUnit,
+    );
+    let Analysis::Locks(effects) = &unit.statements[1].analysis else {
+        panic!("expected locks");
+    };
+    assert!(effects[0].new_table);
 }

@@ -26,6 +26,7 @@ pub trait Rule {
             severity: self.severity(),
             message,
             help,
+            line: None,
         }
     }
 }

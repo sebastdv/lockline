@@ -70,7 +70,7 @@ fn quiet_flag_hides_clean_statements() {
         .args(["check", "tests/fixtures/clean", "--quiet"])
         .assert()
         .code(0)
-        .stdout("0 errors, 0 warnings in 2 files (3 statements analyzed)\n");
+        .stdout("0 errors, 0 warnings in 2 files (3 statements)\n");
 }
 
 #[test]
@@ -103,9 +103,7 @@ fn empty_file_is_fine() {
         .args(["check", "tests/fixtures/empty.sql"])
         .assert()
         .code(0)
-        .stdout(predicate::str::contains(
-            "in 1 file (0 statements analyzed)",
-        ));
+        .stdout(predicate::str::contains("in 1 file (0 statements)"));
 }
 
 #[test]

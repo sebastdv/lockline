@@ -57,8 +57,11 @@ pub struct Report {
 pub struct Counts {
     pub errors: usize,
     pub warnings: usize,
+    pub suppressed: usize,
     pub files: usize,
     pub statements: usize,
+    /// Statements outside the lock catalog.
+    pub not_analyzed: usize,
 }
 
 impl UnitReport {
@@ -77,6 +80,11 @@ impl Report {
         };
         for unit in &self.units {
             counts.statements += unit.statements.len();
+            counts.not_analyzed += unit
+                .statements
+                .iter()
+                .filter(|s| s.analysis == Analysis::NotAnalyzed)
+                .count();
             for finding in unit.all_findings() {
                 match finding.severity {
                     Severity::Error => counts.errors += 1,
@@ -123,6 +131,7 @@ fn analyze_unit(
                 severity: Severity::Error,
                 message: format!("Could not parse this file: {}", error.message),
                 help: None,
+                line: None,
             });
             return report;
         }
@@ -130,14 +139,14 @@ fn analyze_unit(
 
     let mut ctx = UnitContext::new(config.transaction);
     for stmt in &statements {
-        let analysis = analyze_statement(&stmt.node);
-        let new_table = match &analysis {
-            Analysis::Locks(effects) => {
-                !effects.is_empty()
-                    && effects
-                        .iter()
-                        .all(|e| ctx.created_tables.contains(&e.table))
+        let mut analysis = analyze_statement(&stmt.node);
+        if let Analysis::Locks(effects) = &mut analysis {
+            for effect in effects.iter_mut() {
+                effect.new_table = ctx.created_tables.contains(&effect.table);
             }
+        }
+        let new_table = match &analysis {
+            Analysis::Locks(effects) => !effects.is_empty() && effects.iter().all(|e| e.new_table),
             _ => false,
         };
         let rule_ctx = RuleCtx {

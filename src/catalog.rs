@@ -35,12 +35,9 @@ pub fn analyze_statement(node: &NodeEnum) -> Analysis {
             } else {
                 (LockMode::Share, "index build")
             };
-            Analysis::Locks(vec![Effect {
-                table: TableRef::from_range_var(relation),
-                lock,
-                cost: Cost::Scan,
-                note: Some(note.to_string()),
-            }])
+            Analysis::Locks(vec![
+                Effect::new(TableRef::from_range_var(relation), lock, Cost::Scan).with_note(note),
+            ])
         }
         NodeEnum::AlterTableStmt(stmt) => analyze_alter_table(stmt),
         // These lock existing relations (the parent, the referenced table, the old view);
@@ -118,12 +115,11 @@ fn analyze_alter_table(stmt: &AlterTableStmt) -> Analysis {
     if commands == 0 {
         return Analysis::NotAnalyzed;
     }
-    Analysis::Locks(vec![Effect {
-        table: TableRef::from_range_var(relation),
-        lock: LockMode::AccessExclusive,
+    Analysis::Locks(vec![Effect::new(
+        TableRef::from_range_var(relation),
+        LockMode::AccessExclusive,
         cost,
-        note: None,
-    }])
+    )])
 }
 
 /// Inline constraints that validate rows, build an index or lock another table.

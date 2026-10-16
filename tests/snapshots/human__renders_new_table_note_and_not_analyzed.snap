@@ -12,4 +12,4 @@ expression: plain(&r)
   3:1  ALTER TABLE users DROP COLUMN email
        lock   not analyzed
 
-0 errors, 0 warnings in 1 file (3 statements analyzed)
+0 errors, 0 warnings in 1 file (3 statements, 1 not analyzed)

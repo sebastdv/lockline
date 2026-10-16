@@ -10,4 +10,4 @@ dangerous.sql
        help: CREATE INDEX CONCURRENTLY i ON users USING btree (email);
              (CONCURRENTLY cannot run inside a transaction block)
 
-1 error, 0 warnings in 2 files (3 statements analyzed)
+1 error, 0 warnings in 2 files (3 statements)

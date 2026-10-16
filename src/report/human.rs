@@ -64,7 +64,7 @@ fn render_statement(out: &mut String, stmt: &StatementReport, opts: &HumanOption
     match &stmt.analysis {
         Analysis::Locks(effects) => {
             for effect in effects {
-                render_effect(out, effect, stmt.new_table);
+                render_effect(out, effect);
             }
         }
         Analysis::NotAnalyzed => {
@@ -77,14 +77,14 @@ fn render_statement(out: &mut String, stmt: &StatementReport, opts: &HumanOption
     }
 }
 
-fn render_effect(out: &mut String, effect: &Effect, new_table: bool) {
+fn render_effect(out: &mut String, effect: &Effect) {
     let _ = writeln!(
         out,
         "{DETAIL_INDENT}lock   {} on {} — {}{}",
         effect.lock.as_str(),
         effect.table,
         blocking(effect.lock),
-        if new_table { " (new table)" } else { "" }
+        if effect.new_table { " (new table)" } else { "" }
     );
     let note = effect
         .note
@@ -148,8 +148,18 @@ fn cost(cost: Cost) -> &'static str {
 
 fn summary(report: &Report) -> String {
     let c = report.counts();
+    let suppressed = if c.suppressed > 0 {
+        format!(", {} suppressed", c.suppressed)
+    } else {
+        String::new()
+    };
+    let not_analyzed = if c.not_analyzed > 0 {
+        format!(", {} not analyzed", c.not_analyzed)
+    } else {
+        String::new()
+    };
     format!(
-        "{}, {} in {} ({} analyzed)",
+        "{}, {}{suppressed} in {} ({}{not_analyzed})",
         plural(c.errors, "error"),
         plural(c.warnings, "warning"),
         plural(c.files, "file"),

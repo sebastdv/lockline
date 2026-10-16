@@ -43,9 +43,24 @@ impl Hash for TableRef {
 impl fmt::Display for TableRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.schema {
-            Some(schema) => write!(f, "{schema}.{}", self.name),
-            None => f.write_str(&self.name),
+            Some(schema) => write!(f, "{}.{}", quote_ident(schema), quote_ident(&self.name)),
+            None => f.write_str(&quote_ident(&self.name)),
         }
+    }
+}
+
+/// Quotes an identifier the way PostgreSQL would need it typed: only when it is not a plain
+/// lowercase name.
+fn quote_ident(name: &str) -> String {
+    let mut chars = name.chars();
+    let plain = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '$');
+    if plain {
+        name.to_string()
+    } else {
+        format!("\"{}\"", name.replace('"', "\"\""))
     }
 }
 
@@ -65,6 +80,25 @@ pub struct Effect {
     pub lock: LockMode,
     pub cost: Cost,
     pub note: Option<String>,
+    /// The table was created earlier in the same unit (filled in by the analyzer).
+    pub new_table: bool,
+}
+
+impl Effect {
+    pub fn new(table: TableRef, lock: LockMode, cost: Cost) -> Effect {
+        Effect {
+            table,
+            lock,
+            cost,
+            note: None,
+            new_table: false,
+        }
+    }
+
+    pub fn with_note(mut self, note: &str) -> Effect {
+        self.note = Some(note.to_string());
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +132,8 @@ pub struct Finding {
     pub severity: Severity,
     pub message: String,
     pub help: Option<String>,
+    /// Only set for findings about a whole unit (statement findings use the statement's line).
+    pub line: Option<usize>,
 }
 
 #[cfg(test)]
@@ -127,6 +163,15 @@ mod tests {
         assert_eq!(hash_of(&qualified), hash_of(&bare));
         assert_ne!(table(None, "Users"), table(None, "users"));
         assert_ne!(table(Some("app"), "users"), bare);
+    }
+
+    #[test]
+    fn table_ref_display_quotes_when_needed() {
+        assert_eq!(table(None, "Users").to_string(), "\"Users\"");
+        assert_eq!(table(Some("app"), "users").to_string(), "app.users");
+        assert_eq!(table(None, "my table").to_string(), "\"my table\"");
+        assert_eq!(table(None, "a\"b").to_string(), "\"a\"\"b\"");
+        assert_eq!(table(Some("App"), "x").to_string(), "\"App\".x");
     }
 
     #[test]
