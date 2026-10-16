@@ -151,3 +151,14 @@ fn closed_stdout_does_not_panic() {
     assert!(!stderr.contains("panicked"), "{stderr}");
     assert_ne!(output.status.code(), Some(101));
 }
+
+#[test]
+fn empty_directory_warns_but_exits_zero() {
+    let tmp = tempfile::tempdir().unwrap();
+    lockline()
+        .args(["check", tmp.path().to_str().unwrap()])
+        .assert()
+        .code(0)
+        .stderr(predicate::str::contains("warning: "))
+        .stderr(predicate::str::contains("no .sql files found"));
+}

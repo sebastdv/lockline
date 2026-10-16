@@ -2,4 +2,4 @@
 
 mod files;
 
-pub use files::{InputError, collect_units};
+pub use files::{Collected, InputError, collect_units, natural_cmp};

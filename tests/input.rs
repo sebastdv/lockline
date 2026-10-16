@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use lockline::input::{InputError, collect_units};
+use lockline::input::{InputError, collect_units, natural_cmp};
 
 fn write(dir: &Path, rel: &str, contents: &[u8]) {
     let path = dir.join(rel);
@@ -10,7 +10,7 @@ fn write(dir: &Path, rel: &str, contents: &[u8]) {
 }
 
 fn names_relative_to(dir: &Path, paths: &[PathBuf]) -> Vec<String> {
-    let units = collect_units(paths, &mut std::io::empty()).unwrap();
+    let units = collect_units(paths, &mut std::io::empty()).unwrap().units;
     let prefix = format!("{}/", dir.display());
     units
         .into_iter()
@@ -48,7 +48,9 @@ fn explicit_paths_keep_given_order() {
 
 #[test]
 fn dash_reads_stdin() {
-    let units = collect_units(&["-".into()], &mut "SELECT 1;".as_bytes()).unwrap();
+    let units = collect_units(&["-".into()], &mut "SELECT 1;".as_bytes())
+        .unwrap()
+        .units;
     assert_eq!(units.len(), 1);
     assert_eq!(units[0].name, "<stdin>");
     assert_eq!(units[0].sql, "SELECT 1;");
@@ -58,7 +60,9 @@ fn dash_reads_stdin() {
 fn bom_is_stripped() {
     let tmp = tempfile::tempdir().unwrap();
     write(tmp.path(), "bom.sql", b"\xEF\xBB\xBFSELECT 1;");
-    let units = collect_units(&[tmp.path().join("bom.sql")], &mut std::io::empty()).unwrap();
+    let units = collect_units(&[tmp.path().join("bom.sql")], &mut std::io::empty())
+        .unwrap()
+        .units;
     assert_eq!(units[0].sql, "SELECT 1;");
 }
 
@@ -78,4 +82,60 @@ fn invalid_utf8_is_an_io_error() {
     write(tmp.path(), "latin1.sql", b"SELECT '\xF1';");
     let err = collect_units(&[tmp.path().join("latin1.sql")], &mut std::io::empty()).unwrap_err();
     assert!(matches!(err, InputError::Io { .. }));
+}
+
+#[test]
+fn flyway_versions_sort_naturally() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = tmp.path().join("m");
+    for name in ["V10__c.sql", "V2__b.sql", "V1__a.sql"] {
+        write(&m, name, b"SELECT 1;");
+    }
+    assert_eq!(
+        names_relative_to(tmp.path(), &[m]),
+        ["m/V1__a.sql", "m/V2__b.sql", "m/V10__c.sql"]
+    );
+}
+
+#[test]
+fn natural_cmp_cases() {
+    use std::cmp::Ordering::*;
+    let cmp = |a: &str, b: &str| natural_cmp(Path::new(a), Path::new(b));
+    assert_eq!(cmp("0002", "0010"), Less);
+    assert_eq!(cmp("a2", "a10"), Less);
+    assert_eq!(cmp("abc", "abc"), Equal);
+    assert_eq!(cmp("m/2026_x/migration.sql", "m/0002_b.sql"), Greater);
+    assert_eq!(cmp("m/0001_a.sql", "m/0001_b.sql"), Less);
+}
+
+#[test]
+fn uppercase_extension_is_included() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = tmp.path().join("m");
+    write(&m, "0001.SQL", b"SELECT 1;");
+    assert_eq!(names_relative_to(tmp.path(), &[m]), ["m/0001.SQL"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_directory_loop_is_not_followed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = tmp.path().join("m");
+    write(&m, "a.sql", b"SELECT 1;");
+    fs::create_dir_all(m.join("sub")).unwrap();
+    std::os::unix::fs::symlink("..", m.join("sub/back")).unwrap();
+    assert_eq!(names_relative_to(tmp.path(), &[m]), ["m/a.sql"]);
+}
+
+#[test]
+fn empty_directory_warns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = tmp.path().join("m");
+    write(&m, "README.md", b"nothing");
+    let collected = collect_units(std::slice::from_ref(&m), &mut std::io::empty()).unwrap();
+    assert!(collected.units.is_empty());
+    assert_eq!(
+        collected.warnings,
+        [format!("{}: no .sql files found", m.display())]
+    );
 }

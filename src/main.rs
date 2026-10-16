@@ -75,7 +75,12 @@ fn main() -> ExitCode {
 
 fn check(args: CheckArgs) -> ExitCode {
     let units = match collect_units(&args.paths, &mut io::stdin()) {
-        Ok(units) => units,
+        Ok(collected) => {
+            for warning in &collected.warnings {
+                eprintln!("warning: {warning}");
+            }
+            collected.units
+        }
         Err(error) => {
             eprintln!("error: {error}");
             return ExitCode::from(2);
