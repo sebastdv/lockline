@@ -1,0 +1,10 @@
+---
+source: tests/human.rs
+expression: plain(&r)
+---
+long.sql
+  1:1  ALTER TABLE users ADD COLUMN a_rather_long_column_name_for_testing text, ADD CO…
+       lock   ACCESS EXCLUSIVE on users — blocks reads and writes
+       cost   metadata only (fast)
+
+0 errors, 0 warnings in 1 file (1 statement analyzed)

@@ -1,0 +1,17 @@
+---
+source: tests/human.rs
+expression: plain(&r)
+---
+migrations/0007_add_email_index.sql
+  1:1  CREATE INDEX idx_users_email ON users (email)
+       lock   SHARE on users — blocks writes, allows reads
+       cost   full table scan (index build)
+  error[create-index-not-concurrently] Building an index without CONCURRENTLY blocks all writes to "users" until the build finishes.
+       help: CREATE INDEX CONCURRENTLY idx_users_email ON users USING btree (email);
+             (CONCURRENTLY cannot run inside a transaction block)
+
+  2:1  ALTER TABLE users ADD COLUMN nickname text
+       lock   ACCESS EXCLUSIVE on users — blocks reads and writes
+       cost   metadata only (fast)
+
+1 error, 0 warnings in 1 file (2 statements analyzed)

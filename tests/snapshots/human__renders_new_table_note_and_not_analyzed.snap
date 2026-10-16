@@ -1,0 +1,15 @@
+---
+source: tests/human.rs
+expression: plain(&r)
+---
+0001_init.sql
+  1:1  CREATE TABLE users (id bigint PRIMARY KEY, email text)
+
+  2:1  CREATE INDEX idx_users_email ON users (email)
+       lock   SHARE on users — blocks writes, allows reads (new table)
+       cost   full table scan (index build)
+
+  3:1  ALTER TABLE users DROP COLUMN email
+       lock   not analyzed
+
+0 errors, 0 warnings in 1 file (3 statements analyzed)
