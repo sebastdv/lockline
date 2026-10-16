@@ -13,5 +13,6 @@ pub mod schema;
 pub mod volatility;
 
 pub use analyze::{
-    Config, Counts, MigrationUnit, Report, StatementReport, TransactionMode, UnitReport, analyze,
+    Config, Counts, HeldLock, MigrationUnit, Report, StatementReport, TransactionMode,
+    TransactionSummary, UnitReport, analyze,
 };

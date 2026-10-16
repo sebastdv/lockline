@@ -3,7 +3,9 @@
 use std::collections::HashSet;
 
 use pg_query::NodeEnum;
-use pg_query::protobuf::{RangeVar, TransactionStmtKind};
+use pg_query::protobuf::{
+    Node, RangeVar, TransactionStmtKind, VariableSetKind, VariableSetStmt, a_const,
+};
 
 use crate::analyze::TransactionMode;
 use crate::model::TableRef;
@@ -13,6 +15,9 @@ pub struct UnitContext {
     /// Tables created earlier in this unit: they have no rows and no traffic yet.
     pub created_tables: HashSet<TableRef>,
     pub in_transaction: bool,
+    lock_timeout_session: bool,
+    /// `SET LOCAL lock_timeout`: only until the current transaction ends.
+    lock_timeout_local: bool,
 }
 
 impl UnitContext {
@@ -20,7 +25,14 @@ impl UnitContext {
         UnitContext {
             created_tables: HashSet::new(),
             in_transaction: mode == TransactionMode::PerUnit,
+            lock_timeout_session: false,
+            lock_timeout_local: false,
         }
+    }
+
+    /// A non-zero `lock_timeout` is in effect for the next statement.
+    pub fn lock_timeout_set(&self) -> bool {
+        self.lock_timeout_session || (self.in_transaction && self.lock_timeout_local)
     }
 
     /// Updates the state after a statement has been checked by the rules.
@@ -43,13 +55,34 @@ impl UnitContext {
                     || kind == TransactionStmtKind::TransStmtStart as i32
                 {
                     self.in_transaction = true;
-                } else if kind == TransactionStmtKind::TransStmtCommit as i32
-                    || kind == TransactionStmtKind::TransStmtRollback as i32
-                {
-                    self.in_transaction = false;
+                } else if ends_transaction(node) {
+                    // `AND CHAIN` starts a new transaction right away.
+                    self.in_transaction = stmt.chain;
+                    self.lock_timeout_local = false;
                 }
             }
+            NodeEnum::VariableSetStmt(stmt) => self.observe_set(stmt),
             _ => {}
+        }
+    }
+
+    fn observe_set(&mut self, stmt: &VariableSetStmt) {
+        if stmt.kind == VariableSetKind::VarResetAll as i32 {
+            self.lock_timeout_session = false;
+            return;
+        }
+        if stmt.name != "lock_timeout" {
+            return;
+        }
+        let enabled = stmt.kind == VariableSetKind::VarSetValue as i32
+            && !stmt.args.first().is_some_and(is_zero);
+        if stmt.is_local {
+            // Outside a transaction block SET LOCAL has no effect.
+            if self.in_transaction {
+                self.lock_timeout_local = enabled;
+            }
+        } else {
+            self.lock_timeout_session = enabled;
         }
     }
 
@@ -58,5 +91,39 @@ impl UnitContext {
             self.created_tables
                 .insert(TableRef::from_range_var(relation));
         }
+    }
+}
+
+/// COMMIT, ROLLBACK (with or without AND CHAIN) and PREPARE TRANSACTION.
+pub fn ends_transaction(node: &NodeEnum) -> bool {
+    let NodeEnum::TransactionStmt(stmt) = node else {
+        return false;
+    };
+    [
+        TransactionStmtKind::TransStmtCommit,
+        TransactionStmtKind::TransStmtRollback,
+        TransactionStmtKind::TransStmtPrepare,
+    ]
+    .iter()
+    .any(|k| *k as i32 == stmt.kind)
+}
+
+/// `0`, `'0'`, `'0ms'`, `'0s'`: a lock_timeout of zero means "wait forever".
+fn is_zero(value: &Node) -> bool {
+    let Some(NodeEnum::AConst(c)) = value.node.as_ref() else {
+        return false;
+    };
+    match &c.val {
+        Some(a_const::Val::Ival(i)) => i.ival == 0,
+        Some(a_const::Val::Sval(s)) => {
+            let number: String = s
+                .sval
+                .trim()
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            number.parse::<f64>().is_ok_and(|n| n == 0.0)
+        }
+        _ => false,
     }
 }

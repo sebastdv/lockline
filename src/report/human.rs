@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use owo_colors::OwoColorize;
 
-use crate::analyze::{Report, StatementReport, UnitReport};
+use crate::analyze::{Report, StatementReport, TransactionSummary, UnitReport};
 use crate::locks::LockMode;
 use crate::model::{Analysis, Cost, Effect, Finding, Severity};
 
@@ -39,18 +39,42 @@ fn render_unit(unit: &UnitReport, opts: &HumanOptions) -> String {
     for finding in &unit.findings {
         render_finding(&mut out, finding, opts);
     }
-    let statements: Vec<String> = unit
-        .statements
-        .iter()
-        .filter(|stmt| !opts.quiet || !stmt.findings.is_empty())
-        .map(|stmt| {
+    let mut blocks: Vec<String> = Vec::new();
+    for (index, stmt) in unit.statements.iter().enumerate() {
+        if opts.quiet && stmt.findings.is_empty() {
+            continue;
+        }
+        let mut block = String::new();
+        render_statement(&mut block, stmt, opts);
+        if !opts.quiet {
+            for summary in unit
+                .transactions
+                .iter()
+                .filter(|t| t.ends_after == Some(index))
+            {
+                render_held_locks(&mut block, summary);
+            }
+        }
+        blocks.push(block);
+    }
+    if !opts.quiet {
+        for summary in unit.transactions.iter().filter(|t| t.ends_after.is_none()) {
             let mut block = String::new();
-            render_statement(&mut block, stmt, opts);
-            block
-        })
-        .collect();
-    out.push_str(&statements.join("\n"));
+            render_held_locks(&mut block, summary);
+            blocks.push(block);
+        }
+    }
+    out.push_str(&blocks.join("\n"));
     out
+}
+
+fn render_held_locks(out: &mut String, summary: &TransactionSummary) {
+    let locks: Vec<String> = summary
+        .locks
+        .iter()
+        .map(|h| format!("{} on {}", h.lock.as_str(), h.table))
+        .collect();
+    let _ = writeln!(out, "  holds until commit: {}", locks.join(", "));
 }
 
 fn render_statement(out: &mut String, stmt: &StatementReport, opts: &HumanOptions) {

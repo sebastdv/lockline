@@ -106,3 +106,12 @@ fn color_only_when_asked() {
     );
     assert!(colored.contains('\x1b'));
 }
+
+#[test]
+fn renders_held_locks() {
+    let r = report(&[(
+        "0003_two_steps.sql",
+        "ALTER TABLE users ADD COLUMN a int;\nCREATE INDEX CONCURRENTLY i ON orders (x);\nCREATE INDEX j ON orders (y);\n",
+    )]);
+    insta::assert_snapshot!(plain(&r));
+}

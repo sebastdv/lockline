@@ -1,3 +1,4 @@
+use lockline::locks::LockMode;
 use lockline::model::{Analysis, Severity};
 use lockline::{Config, Counts, MigrationUnit, TransactionMode, UnitReport, analyze};
 
@@ -242,4 +243,74 @@ fn per_effect_new_table() {
     assert!(!effects[1].new_table);
     assert!(!stmt.new_table);
     assert!(rules(&unit).is_empty());
+}
+
+/// (ends_after, statement_count, [(table, lock)])
+type Held = (Option<usize>, usize, Vec<(String, LockMode)>);
+
+fn held(unit: &UnitReport) -> Vec<Held> {
+    unit.transactions
+        .iter()
+        .map(|t| {
+            (
+                t.ends_after,
+                t.statement_count,
+                t.locks
+                    .iter()
+                    .map(|l| (l.table.to_string(), l.lock))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn held_locks_summary() {
+    let implicit = run(
+        "ALTER TABLE users ADD COLUMN a int; CREATE INDEX i ON orders (x);",
+        TransactionMode::PerUnit,
+    );
+    assert_eq!(
+        held(&implicit),
+        [(
+            None,
+            2,
+            vec![
+                ("users".to_string(), LockMode::AccessExclusive),
+                ("orders".to_string(), LockMode::Share)
+            ]
+        )]
+    );
+
+    let single = run(
+        "ALTER TABLE users ADD COLUMN a int;",
+        TransactionMode::PerUnit,
+    );
+    assert!(single.transactions.is_empty());
+
+    let explicit = run(
+        "BEGIN; ALTER TABLE users ADD COLUMN a int; CREATE INDEX i ON users (a); COMMIT; SELECT 1;",
+        TransactionMode::None,
+    );
+    assert_eq!(
+        held(&explicit),
+        [(
+            Some(3),
+            2,
+            vec![("users".to_string(), LockMode::AccessExclusive)]
+        )]
+    );
+
+    let new_table = run(
+        "CREATE TABLE t (id int); CREATE INDEX i ON t (id); ALTER TABLE users ADD COLUMN a int;",
+        TransactionMode::PerUnit,
+    );
+    assert_eq!(
+        held(&new_table),
+        [(
+            None,
+            3,
+            vec![("users".to_string(), LockMode::AccessExclusive)]
+        )]
+    );
 }

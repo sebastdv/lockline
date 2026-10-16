@@ -49,6 +49,8 @@ examples/migrations/0002_track_logins.sql
   error[add-column-rewrite] Adding this column rewrites "users" and all its indexes while holding an ACCESS EXCLUSIVE lock.
        help: Add the column without a default (or with a constant default), then backfill in batches and set the default afterwards.
 
+  holds until commit: ACCESS EXCLUSIVE on users
+
 2 errors, 0 warnings in 2 files (5 statements)
 ```
 

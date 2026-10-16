@@ -1,0 +1,25 @@
+---
+source: tests/human.rs
+expression: plain(&r)
+---
+0003_two_steps.sql
+  1:1  ALTER TABLE users ADD COLUMN a int
+       lock   ACCESS EXCLUSIVE on users — blocks reads and writes
+       cost   metadata only (fast)
+
+  2:1  CREATE INDEX CONCURRENTLY i ON orders (x)
+       lock   SHARE UPDATE EXCLUSIVE on orders — allows reads and writes
+       cost   full table scan (index build, does not block writes)
+  error[cannot-run-in-transaction] CREATE INDEX CONCURRENTLY cannot run inside a transaction block; this migration will fail.
+       help: Run it outside a transaction. In Laravel, add "public $withinTransaction = false;" to the migration class.
+
+  3:1  CREATE INDEX j ON orders (y)
+       lock   SHARE on orders — blocks writes, allows reads
+       cost   full table scan (index build)
+  error[create-index-not-concurrently] Building an index without CONCURRENTLY blocks all writes to "orders" until the build finishes.
+       help: CREATE INDEX CONCURRENTLY j ON orders USING btree (y);
+             (CONCURRENTLY cannot run inside a transaction block)
+
+  holds until commit: ACCESS EXCLUSIVE on users, SHARE on orders
+
+2 errors, 0 warnings in 1 file (3 statements)

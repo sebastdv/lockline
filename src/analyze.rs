@@ -1,8 +1,13 @@
 //! Walks migration units statement by statement and produces the report.
 
+use std::collections::HashSet;
+
+use pg_query::NodeEnum;
+
 use crate::catalog::analyze_statement;
-use crate::context::UnitContext;
-use crate::model::{Analysis, Finding, Severity};
+use crate::context::{UnitContext, ends_transaction};
+use crate::locks::LockMode;
+use crate::model::{Analysis, Effect, Finding, Severity, TableRef};
 use crate::parse::parse_sql;
 use crate::rules::{self, RuleCtx};
 use crate::schema::Schema;
@@ -47,6 +52,52 @@ pub struct UnitReport {
     pub statements: Vec<StatementReport>,
     /// Findings about the unit as a whole, such as `parse-error`.
     pub findings: Vec<Finding>,
+    /// Transactions with two or more statements that hold locks until they end.
+    pub transactions: Vec<TransactionSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldLock {
+    pub table: TableRef,
+    pub lock: LockMode,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransactionSummary {
+    /// Index in `statements` of the COMMIT/ROLLBACK/PREPARE; `None` when the unit's implicit
+    /// transaction ends with the file.
+    pub ends_after: Option<usize>,
+    /// Statements inside the transaction, not counting BEGIN/COMMIT.
+    pub statement_count: usize,
+    /// Strongest lock per existing table, in the order they were first taken.
+    pub locks: Vec<HeldLock>,
+}
+
+impl TransactionSummary {
+    fn open() -> Self {
+        TransactionSummary {
+            ends_after: None,
+            statement_count: 0,
+            locks: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, effects: &[Effect]) {
+        self.statement_count += 1;
+        for effect in effects.iter().filter(|e| !e.new_table) {
+            match self.locks.iter_mut().find(|h| h.table == effect.table) {
+                Some(held) => held.lock = held.lock.max(effect.lock),
+                None => self.locks.push(HeldLock {
+                    table: effect.table.clone(),
+                    lock: effect.lock,
+                }),
+            }
+        }
+    }
+
+    fn worth_reporting(&self) -> bool {
+        self.statement_count >= 2 && !self.locks.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -126,6 +177,7 @@ fn analyze_unit(
         name: unit.name.clone(),
         statements: Vec::new(),
         findings: Vec::new(),
+        transactions: Vec::new(),
     };
     let statements = match parse_sql(&unit.sql) {
         Ok(statements) => statements,
@@ -147,7 +199,9 @@ fn analyze_unit(
     };
 
     let mut ctx = UnitContext::new(config.transaction);
-    for stmt in &statements {
+    let mut transaction = TransactionSummary::open();
+    let mut fired_once: HashSet<&'static str> = HashSet::new();
+    for (index, stmt) in statements.iter().enumerate() {
         let mut analysis = analyze_statement(&stmt.node, schema);
         if let Analysis::Locks(effects) = &mut analysis {
             for effect in effects.iter_mut() {
@@ -163,8 +217,27 @@ fn analyze_unit(
             analysis: &analysis,
             new_table,
             in_transaction: ctx.in_transaction,
+            schema,
+            lock_timeout_set: ctx.lock_timeout_set(),
         };
-        let findings = rules.iter().filter_map(|r| r.check(&rule_ctx)).collect();
+        let findings: Vec<Finding> = rules
+            .iter()
+            .filter(|r| !r.once_per_unit() || !fired_once.contains(r.id()))
+            .filter_map(|r| r.check(&rule_ctx))
+            .collect();
+        for rule in rules.iter().filter(|r| r.once_per_unit()) {
+            if findings.iter().any(|f| f.rule == rule.id()) {
+                fired_once.insert(rule.id());
+            }
+        }
+        let is_control = matches!(stmt.node, NodeEnum::TransactionStmt(_));
+        if ctx.in_transaction && !is_control {
+            let effects = match &analysis {
+                Analysis::Locks(effects) => effects.as_slice(),
+                _ => &[],
+            };
+            transaction.record(effects);
+        }
         report.statements.push(StatementReport {
             line: stmt.line,
             col: stmt.col,
@@ -175,6 +248,16 @@ fn analyze_unit(
         });
         ctx.observe(&stmt.node);
         schema.observe(&stmt.node);
+        if ends_transaction(&stmt.node) {
+            let mut ended = std::mem::replace(&mut transaction, TransactionSummary::open());
+            ended.ends_after = Some(index);
+            if ended.worth_reporting() {
+                report.transactions.push(ended);
+            }
+        }
+    }
+    if ctx.in_transaction && transaction.worth_reporting() {
+        report.transactions.push(transaction);
     }
     report
 }

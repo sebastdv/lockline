@@ -6,6 +6,7 @@ mod create_index_not_concurrently;
 
 use crate::model::{Analysis, Finding, Severity};
 use crate::parse::Statement;
+use crate::schema::Schema;
 
 pub struct RuleCtx<'a> {
     pub stmt: &'a Statement,
@@ -13,12 +14,20 @@ pub struct RuleCtx<'a> {
     /// Every table the statement locks was created earlier in the same unit.
     pub new_table: bool,
     pub in_transaction: bool,
+    pub schema: &'a Schema,
+    /// A non-zero lock_timeout is in effect.
+    pub lock_timeout_set: bool,
 }
 
 pub trait Rule {
     fn id(&self) -> &'static str;
     fn severity(&self) -> Severity;
     fn check(&self, ctx: &RuleCtx) -> Option<Finding>;
+
+    /// Report only the first finding of this rule in each unit.
+    fn once_per_unit(&self) -> bool {
+        false
+    }
 
     fn finding(&self, message: String, help: Option<String>) -> Finding {
         Finding {
