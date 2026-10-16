@@ -30,7 +30,7 @@ impl Rule for MissingLockTimeout {
         Some(self.finding(
             format!(
                 "This migration takes an ACCESS EXCLUSIVE lock on \"{}\" without a lock_timeout; if the lock has to wait, every query on the table queues behind it.",
-                effect.table
+                effect.table.plain()
             ),
             Some(
                 "Add SET lock_timeout = '5s'; at the start of the migration (SET LOCAL inside a transaction) and retry on failure."

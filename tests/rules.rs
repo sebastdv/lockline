@@ -78,7 +78,7 @@ fn reindex_not_concurrently_fires() {
     );
     assert_eq!(
         f.message,
-        "REINDEX without CONCURRENTLY blocks writes to \"users\" while the indexes are rebuilt."
+        "REINDEX without CONCURRENTLY blocks writes to \"users\", and queries that use its indexes, while the indexes are rebuilt."
     );
     assert!(f.help.unwrap().contains("CONCURRENTLY"));
 }
@@ -581,4 +581,142 @@ fn missing_lock_timeout_once_per_unit() {
                ALTER TABLE users ADD COLUMN b int; \
                ALTER TABLE orders ADD COLUMN c int;";
     assert_eq!(fired_all(sql, PerUnit), ["missing-lock-timeout"]);
+}
+
+// --- Final review fixes ---
+
+#[test]
+fn renamed_new_table_stays_new() {
+    let swap = "CREATE TABLE users_new (id int, email text);
+                ALTER TABLE users RENAME TO users_old;
+                ALTER TABLE users_new RENAME TO users;
+                CREATE INDEX users_email ON users (email);";
+    assert_eq!(fired(swap, PerUnit), ["rename-object"]);
+    let chain = "CREATE TABLE public.users (email text);
+                 ALTER TABLE users RENAME TO accounts;
+                 ALTER TABLE accounts RENAME COLUMN email TO mail;";
+    assert!(fired_all(chain, PerUnit).is_empty());
+    let dropped = "CREATE TABLE t (a int); DROP TABLE t; CREATE INDEX i ON t (a);";
+    assert_eq!(fired(dropped, PerUnit), ["create-index-not-concurrently"]);
+}
+
+/// SQL statements in a help text: the lines that end with `;`.
+fn help_sql(help: &str) -> Vec<&str> {
+    help.lines()
+        .map(str::trim)
+        .filter(|l| l.ends_with(';') && !l.starts_with('('))
+        .collect()
+}
+
+#[test]
+fn help_sql_is_valid_sql() {
+    let statements = [
+        "CREATE INDEX \"Idx\" ON \"User\" (\"orgId\");",
+        "DROP INDEX \"Idx\";",
+        "REINDEX TABLE \"User\";",
+        "ALTER TABLE \"User\" ALTER COLUMN \"userId\" SET NOT NULL;",
+        "ALTER TABLE \"User\" ADD CONSTRAINT \"User_orgId_fkey\" FOREIGN KEY (\"orgId\") REFERENCES \"Org\" (\"id\");",
+        "ALTER TABLE \"User\" ADD CONSTRAINT \"Weird \"\"name\"\"\" CHECK (\"age\" > 0);",
+        "ALTER TABLE \"User\" ADD CONSTRAINT \"User_email_key\" UNIQUE (\"email\");",
+        "ALTER TABLE \"User\" ADD COLUMN \"code\" text UNIQUE;",
+        "ALTER TABLE users ADD CONSTRAINT u UNIQUE NULLS NOT DISTINCT (a) INCLUDE (b) WITH (fillfactor = 70) DEFERRABLE INITIALLY DEFERRED;",
+        "ALTER TABLE users ADD PRIMARY KEY (id);",
+        "REFRESH MATERIALIZED VIEW \"Stats\";",
+    ];
+    for sql in statements {
+        for f in findings(sql, Autocommit) {
+            let Some(help) = f.help else { continue };
+            for line in help_sql(&help) {
+                assert!(
+                    pg_query::parse(line).is_ok(),
+                    "{}: invalid suggestion {line:?} for {sql}",
+                    f.rule
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn prisma_identifiers_are_quoted() {
+    let f = finding(
+        "ALTER TABLE \"User\" ALTER COLUMN \"userId\" SET NOT NULL;",
+        PerUnit,
+        "set-not-null",
+    );
+    assert!(f.message.contains("\"User\""), "{}", f.message);
+    assert!(!f.message.contains("\"\"User\"\""), "{}", f.message);
+    let help = f.help.unwrap();
+    assert!(help.contains("CHECK (\"userId\" IS NOT NULL)"), "{help}");
+    assert!(
+        help.contains("VALIDATE CONSTRAINT \"User_userId_not_null\";"),
+        "{help}"
+    );
+
+    let fk = finding(
+        "ALTER TABLE \"User\" ADD CONSTRAINT \"User_orgId_fkey\" FOREIGN KEY (\"orgId\") REFERENCES \"Org\" (\"id\");",
+        PerUnit,
+        "add-foreign-key-without-not-valid",
+    );
+    assert!(
+        fk.help
+            .unwrap()
+            .ends_with("VALIDATE CONSTRAINT \"User_orgId_fkey\";")
+    );
+}
+
+#[test]
+fn unique_help_keeps_the_constraint_options() {
+    let f = finding(
+        "ALTER TABLE users ADD CONSTRAINT u UNIQUE NULLS NOT DISTINCT (a) INCLUDE (b) WITH (fillfactor = 70) DEFERRABLE INITIALLY DEFERRED;",
+        PerUnit,
+        "add-unique-without-index",
+    );
+    let help = f.help.unwrap();
+    assert!(help.contains("NULLS NOT DISTINCT"), "{help}");
+    assert!(help.contains("INCLUDE (b)"), "{help}");
+    assert!(help.contains("fillfactor"), "{help}");
+    assert!(help.contains("DEFERRABLE INITIALLY DEFERRED"), "{help}");
+
+    let pk = finding(
+        "ALTER TABLE users ADD PRIMARY KEY (id);",
+        PerUnit,
+        "add-unique-without-index",
+    );
+    assert!(pk.help.unwrap().contains("must already be NOT NULL"));
+
+    let inline = finding(
+        "ALTER TABLE users ADD COLUMN code text UNIQUE;",
+        PerUnit,
+        "add-unique-without-index",
+    );
+    assert!(
+        inline
+            .help
+            .unwrap()
+            .starts_with("Add the column without the constraint, then:\n")
+    );
+}
+
+#[test]
+fn laravel_change_is_analyzed() {
+    let sql = "alter table \"users\" alter column \"name\" type varchar(100), \
+               alter column \"name\" set not null, alter column \"name\" drop default, \
+               alter column \"name\" drop identity if exists;";
+    let rules = fired(sql, PerUnit);
+    assert!(rules.contains(&"alter-column-type"), "{rules:?}");
+    assert!(rules.contains(&"set-not-null"), "{rules:?}");
+}
+
+#[test]
+fn reindex_message_mentions_queries() {
+    let f = finding(
+        "REINDEX TABLE users;",
+        Autocommit,
+        "reindex-not-concurrently",
+    );
+    assert_eq!(
+        f.message,
+        "REINDEX without CONCURRENTLY blocks writes to \"users\", and queries that use its indexes, while the indexes are rebuilt."
+    );
 }

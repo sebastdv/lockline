@@ -25,7 +25,7 @@ impl Rule for CreateIndexNotConcurrently {
         let table = TableRef::from_range_var(stmt.relation.as_ref()?);
         Some(self.finding(
             format!(
-                "Building an index without CONCURRENTLY blocks all writes to \"{table}\" until the build finishes."
+                "Building an index without CONCURRENTLY blocks all writes to \"{}\" until the build finishes.", table.plain()
             ),
             Some(format!(
                 "{};\n(CONCURRENTLY cannot run inside a transaction block)",

@@ -4,11 +4,12 @@ use std::collections::HashSet;
 
 use pg_query::NodeEnum;
 use pg_query::protobuf::{
-    Node, RangeVar, TransactionStmtKind, VariableSetKind, VariableSetStmt, a_const,
+    Node, ObjectType, RangeVar, TransactionStmtKind, VariableSetKind, VariableSetStmt, a_const,
 };
 
 use crate::analyze::TransactionMode;
 use crate::model::TableRef;
+use crate::schema::qualified_name;
 
 #[derive(Debug, Clone)]
 pub struct UnitContext {
@@ -45,6 +46,23 @@ impl UnitContext {
             }
             NodeEnum::CreateTableAsStmt(stmt) if !stmt.if_not_exists => {
                 self.mark_created(stmt.into.as_ref().and_then(|i| i.rel.as_ref()));
+            }
+            // A new table keeps being new under its new name; a dropped one is gone.
+            NodeEnum::RenameStmt(stmt) if stmt.rename_type == ObjectType::ObjectTable as i32 => {
+                if let Some(relation) = &stmt.relation {
+                    let old = TableRef::from_range_var(relation);
+                    if self.created_tables.remove(&old) {
+                        self.created_tables.insert(TableRef {
+                            schema: old.schema,
+                            name: stmt.newname.clone(),
+                        });
+                    }
+                }
+            }
+            NodeEnum::DropStmt(stmt) if stmt.remove_type == ObjectType::ObjectTable as i32 => {
+                for name in stmt.objects.iter().filter_map(qualified_name) {
+                    self.created_tables.remove(&name);
+                }
             }
             NodeEnum::SelectStmt(stmt) => {
                 self.mark_created(stmt.into_clause.as_ref().and_then(|i| i.rel.as_ref()));

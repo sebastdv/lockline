@@ -31,7 +31,7 @@ impl Rule for AddColumnUnknownDefault {
         Some(self.finding(
             format!(
                 "lockline cannot tell whether the default {name} is volatile; if it is, \"{}\" is rewritten.",
-                target.table
+                target.table.plain()
             ),
             Some(
                 "Use a constant default, or check the function's volatility (pg_proc.provolatile) and add a lockline:ignore comment with the reason."

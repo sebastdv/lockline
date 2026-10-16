@@ -23,7 +23,7 @@ impl Rule for AddCheckWithoutNotValid {
         Some(self.finding(
             format!(
                 "Adding a CHECK constraint scans all of \"{}\" under an ACCESS EXCLUSIVE lock.",
-                target.table
+                target.table.plain()
             ),
             Some(not_valid_then_validate(relation(&ctx.stmt.node)?, &added)),
         ))

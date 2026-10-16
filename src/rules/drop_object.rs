@@ -19,7 +19,7 @@ impl Rule for DropObject {
         let target = ctx.existing_target()?;
         let name = match &ctx.stmt.node {
             NodeEnum::DropStmt(stmt) if stmt.remove_type == ObjectType::ObjectTable as i32 => {
-                target.table.to_string()
+                target.table.plain()
             }
             node => table_alter_cmds(node)
                 .into_iter()

@@ -7,7 +7,7 @@ use pg_query::protobuf::{
 };
 
 use super::{added_column, column_constraints, table_alter_cmds};
-use crate::model::TableRef;
+use crate::model::{TableRef, quote_ident};
 
 /// A constraint added by an ALTER TABLE, either with ADD CONSTRAINT or inline in ADD COLUMN.
 pub(crate) struct AddedConstraint<'a> {
@@ -117,10 +117,11 @@ pub(crate) fn not_valid_then_validate(relation: &RangeVar, added: &AddedConstrai
         objtype: ObjectType::ObjectTable as i32,
         ..AlterTableStmt::default()
     };
+    let quoted = quote_ident(&name);
     let add = NodeEnum::AlterTableStmt(stmt)
         .deparse()
-        .unwrap_or_else(|_| format!("ALTER TABLE {table} ADD CONSTRAINT {name} ... NOT VALID"));
-    let sql = format!("{add};\nALTER TABLE {table} VALIDATE CONSTRAINT {name};");
+        .unwrap_or_else(|_| format!("ALTER TABLE {table} ADD CONSTRAINT {quoted} ... NOT VALID"));
+    let sql = format!("{add};\nALTER TABLE {table} VALIDATE CONSTRAINT {quoted};");
     if added.inline_column.is_some() {
         format!("Add the column without the constraint, then:\n{sql}")
     } else {

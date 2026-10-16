@@ -46,7 +46,7 @@ impl Rule for AlterColumnType {
             return Some(self.finding(
                 format!(
                     "Changing the type of \"{}\" rewrites \"{}\" and its indexes under an ACCESS EXCLUSIVE lock.",
-                    cmd.name, target.table
+                    cmd.name, target.table.plain()
                 ),
                 Some(help),
             ));

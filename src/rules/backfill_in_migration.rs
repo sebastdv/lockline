@@ -20,7 +20,7 @@ impl Rule for BackfillInMigration {
             NodeEnum::DeleteStmt(stmt) if stmt.where_clause.is_none() => "Deleting",
             _ => return None,
         };
-        let table = &ctx.existing_target()?.table;
+        let table = ctx.existing_target()?.table.plain();
         Some(self.finding(
             format!(
                 "{verb} every row of \"{table}\" in a migration holds row locks on the whole table and can run for a long time."

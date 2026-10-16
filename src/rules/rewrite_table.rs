@@ -24,7 +24,7 @@ impl Rule for RewriteTable {
         Some(self.finding(
             format!(
                 "{label} rewrites \"{}\" under an ACCESS EXCLUSIVE lock; nothing can read or write it until it finishes.",
-                target.table
+                target.table.plain()
             ),
             Some(
                 "Use pg_repack or pg_squeeze to rebuild the table online, outside of migrations."

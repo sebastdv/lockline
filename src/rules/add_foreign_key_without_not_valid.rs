@@ -21,7 +21,8 @@ impl Rule for AddForeignKeyWithoutNotValid {
             .into_iter()
             .find(|a| a.is(ConstrType::ConstrForeign) && !a.constraint.skip_validation)?;
         let referenced = TableRef::from_range_var(added.constraint.pktable.as_ref()?);
-        let table = &target.table;
+        let table = target.table.plain();
+        let referenced = referenced.plain();
         Some(self.finding(
             format!(
                 "Adding a foreign key scans \"{table}\" and blocks writes to \"{table}\" and \"{referenced}\" until it is validated."

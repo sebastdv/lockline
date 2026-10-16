@@ -21,6 +21,14 @@ impl TableRef {
         }
     }
 
+    /// `schema.name` as written, without SQL quoting, for messages.
+    pub fn plain(&self) -> String {
+        match &self.schema {
+            Some(schema) => format!("{schema}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
+
     fn key(&self) -> (&str, &str) {
         (self.schema.as_deref().unwrap_or("public"), &self.name)
     }
@@ -51,7 +59,7 @@ impl fmt::Display for TableRef {
 
 /// Quotes an identifier the way PostgreSQL would need it typed: only when it is not a plain
 /// lowercase name.
-fn quote_ident(name: &str) -> String {
+pub(crate) fn quote_ident(name: &str) -> String {
     let mut chars = name.chars();
     let plain = chars
         .next()

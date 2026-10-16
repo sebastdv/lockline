@@ -298,14 +298,22 @@ fn analyze_reindex(stmt: &ReindexStmt, schema: &Schema) -> Analysis {
     let target = TableRef::from_range_var(relation);
     match ReindexObjectType::try_from(stmt.kind) {
         Ok(ReindexObjectType::ReindexObjectTable) => locks(vec![
-            Effect::new(target, lock, Cost::Scan).with_note("rebuilds the table's indexes"),
+            Effect::new(target, lock, Cost::Scan).with_note(if concurrent {
+                "rebuilds the table's indexes"
+            } else {
+                "rebuilds the table's indexes; ACCESS EXCLUSIVE on each index blocks queries that use it"
+            }),
         ]),
         Ok(ReindexObjectType::ReindexObjectIndex) => locks(vec![index_table_effect(
             &target,
             schema,
             lock,
             Cost::Scan,
-            Some("rebuilds the index"),
+            Some(if concurrent {
+                "rebuilds the index"
+            } else {
+                "rebuilds the index; ACCESS EXCLUSIVE on the index blocks queries that use it"
+            }),
         )]),
         _ => Analysis::NotAnalyzed,
     }
@@ -519,8 +527,17 @@ fn alter_cmd_effect(cmd: &AlterTableCmd, table: &TableRef, schema: &Schema) -> O
             add_constraint_effect(c)?
         }
         AtValidateConstraint => CmdEffect::new(ShareUpdateExclusive, Cost::Scan),
-        AtSetStatistics | AtSetOptions | AtResetOptions | AtSetRelOptions | AtResetRelOptions => {
-            CmdEffect::new(ShareUpdateExclusive, Cost::Metadata)
+        AtSetStatistics | AtSetOptions | AtResetOptions | AtSetRelOptions | AtResetRelOptions
+        | AtClusterOn | AtDropCluster => CmdEffect::new(ShareUpdateExclusive, Cost::Metadata),
+        AtAddIdentity | AtSetIdentity | AtDropIdentity | AtReplicaIdentity | AtChangeOwner
+        | AtAlterConstraint | AtEnableRowSecurity | AtDisableRowSecurity | AtForceRowSecurity
+        | AtNoForceRowSecurity => CmdEffect::new(AccessExclusive, Cost::Metadata),
+        AtEnableTrig | AtEnableAlwaysTrig | AtEnableReplicaTrig | AtDisableTrig
+        | AtEnableTrigAll | AtDisableTrigAll | AtEnableTrigUser | AtDisableTrigUser => {
+            CmdEffect::new(ShareRowExclusive, Cost::Metadata)
+        }
+        AtSetLogged | AtSetUnLogged => {
+            CmdEffect::new(AccessExclusive, Cost::Rewrite).note("rewrites the table")
         }
         AtAttachPartition => {
             let Some(NodeEnum::PartitionCmd(p)) = def else {
@@ -567,6 +584,11 @@ fn add_constraint_effect(c: &Constraint) -> Option<CmdEffect> {
         ConstrType::ConstrUnique | ConstrType::ConstrPrimary => {
             if c.indexname.is_empty() {
                 CmdEffect::new(AccessExclusive, Cost::Scan).note("builds an index")
+            } else if c.contype == ConstrType::ConstrPrimary as i32 {
+                // PRIMARY KEY implies NOT NULL: PostgreSQL scans for NULLs unless the columns
+                // are already NOT NULL, which lockline cannot know.
+                CmdEffect::new(AccessExclusive, Cost::Scan)
+                    .note("scans for NULLs unless the columns are already NOT NULL")
             } else {
                 CmdEffect::new(AccessExclusive, Cost::Metadata)
             }

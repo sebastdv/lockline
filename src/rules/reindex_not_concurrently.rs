@@ -48,8 +48,8 @@ impl Rule for ReindexNotConcurrently {
             .unwrap_or_else(|_| format!("{} -- add CONCURRENTLY", ctx.stmt.text));
         Some(self.finding(
             format!(
-                "REINDEX without CONCURRENTLY blocks writes to \"{}\" while the indexes are rebuilt.",
-                target.table
+                "REINDEX without CONCURRENTLY blocks writes to \"{}\", and queries that use its indexes, while the indexes are rebuilt.",
+                target.table.plain()
             ),
             Some(format!(
                 "{help};\n(CONCURRENTLY cannot run inside a transaction block)"

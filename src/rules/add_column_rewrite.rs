@@ -23,7 +23,7 @@ impl Rule for AddColumnRewrite {
         Some(self.finding(
             format!(
                 "Adding this column rewrites \"{}\" and all its indexes while holding an ACCESS EXCLUSIVE lock.",
-                effect.table
+                effect.table.plain()
             ),
             Some(
                 "Add the column without a default (or with a constant default), then backfill in batches and set the default afterwards."

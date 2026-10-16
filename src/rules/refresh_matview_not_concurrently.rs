@@ -23,7 +23,7 @@ impl Rule for RefreshMatviewNotConcurrently {
         }
         let view = &ctx.existing_target()?.table;
         Some(self.finding(
-            format!("Refreshing without CONCURRENTLY blocks every read of \"{view}\" until it finishes."),
+            format!("Refreshing without CONCURRENTLY blocks every read of \"{}\" until it finishes.", view.plain()),
             Some(format!(
                 "REFRESH MATERIALIZED VIEW CONCURRENTLY {view};\n(requires a unique index on the view)"
             )),

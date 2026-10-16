@@ -21,7 +21,7 @@ impl Rule for RenameObject {
         };
         let target = ctx.existing_target()?;
         let name = if stmt.rename_type == ObjectType::ObjectTable as i32 {
-            target.table.to_string()
+            target.table.plain()
         } else if stmt.rename_type == ObjectType::ObjectColumn as i32 {
             stmt.subname.clone()
         } else {

@@ -49,7 +49,7 @@ impl Rule for AddColumnNotNullWithoutDefault {
             self.finding(
                 format!(
                     "Adding a NOT NULL column without a DEFAULT fails if \"{}\" has any rows.",
-                    target.table
+                    target.table.plain()
                 ),
                 Some(
                     "Add a DEFAULT, or add the column as nullable, backfill it, then SET NOT NULL."
