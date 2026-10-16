@@ -10,9 +10,10 @@ pub mod parse;
 pub mod report;
 pub mod rules;
 pub mod schema;
+pub mod suppress;
 pub mod volatility;
 
 pub use analyze::{
-    Config, Counts, HeldLock, MigrationUnit, Report, StatementReport, TransactionMode,
+    Config, Counts, HeldLock, MigrationUnit, Report, StatementReport, Suppressed, TransactionMode,
     TransactionSummary, UnitReport, analyze,
 };

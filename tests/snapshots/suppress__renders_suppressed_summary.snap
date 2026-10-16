@@ -1,0 +1,14 @@
+---
+source: tests/suppress.rs
+expression: out
+---
+m.sql
+  1:1  SET lock_timeout = '5s'
+
+  3:1  CREATE INDEX i ON users (e)
+       lock   SHARE on users — blocks writes, allows reads
+       cost   full table scan (index build)
+
+  holds until commit: SHARE on users
+
+0 errors, 0 warnings, 1 suppressed in 1 file (2 statements)

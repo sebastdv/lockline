@@ -11,6 +11,7 @@ use crate::model::{Analysis, Effect, Finding, Severity, TableRef};
 use crate::parse::parse_sql;
 use crate::rules::{self, RuleCtx};
 use crate::schema::Schema;
+use crate::suppress::{Ignore, parse_ignores};
 
 /// One migration as it will run: a file, stdin, or one migration from a tool's output.
 #[derive(Debug, Clone)]
@@ -44,6 +45,14 @@ pub struct StatementReport {
     /// Every table this statement locks was created earlier in the same unit.
     pub new_table: bool,
     pub findings: Vec<Finding>,
+    /// Findings silenced by a `lockline:ignore` comment.
+    pub suppressed: Vec<Suppressed>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Suppressed {
+    pub rule: &'static str,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +141,11 @@ impl Report {
         };
         for unit in &self.units {
             counts.statements += unit.statements.len();
+            counts.suppressed += unit
+                .statements
+                .iter()
+                .map(|s| s.suppressed.len())
+                .sum::<usize>();
             counts.not_analyzed += unit
                 .statements
                 .iter()
@@ -198,6 +212,9 @@ fn analyze_unit(
         }
     };
 
+    let ignores = parse_ignores(&unit.sql);
+    let mut attached = vec![false; ignores.len()];
+    let mut prev_end_line = 0;
     let mut ctx = UnitContext::new(config.transaction);
     let mut transaction = TransactionSummary::open();
     let mut fired_once: HashSet<&'static str> = HashSet::new();
@@ -220,7 +237,7 @@ fn analyze_unit(
             schema,
             lock_timeout_set: ctx.lock_timeout_set(),
         };
-        let findings: Vec<Finding> = rules
+        let mut findings: Vec<Finding> = rules
             .iter()
             .filter(|r| !r.once_per_unit() || !fired_once.contains(r.id()))
             .filter_map(|r| r.check(&rule_ctx))
@@ -230,6 +247,36 @@ fn analyze_unit(
                 fired_once.insert(rule.id());
             }
         }
+        let applicable: Vec<usize> = (0..ignores.len())
+            .filter(|&i| {
+                let ignore = &ignores[i];
+                ignore.file_wide || (prev_end_line < ignore.line && ignore.line < stmt.line)
+            })
+            .collect();
+        let mut suppressed = Vec::new();
+        findings.retain(|f| {
+            let by = applicable
+                .iter()
+                .map(|&i| &ignores[i])
+                .find(|ignore| ignore.rules.iter().any(|r| r == f.rule));
+            match by {
+                Some(ignore) => {
+                    suppressed.push(Suppressed {
+                        rule: f.rule,
+                        reason: ignore.reason.clone(),
+                    });
+                    false
+                }
+                None => true,
+            }
+        });
+        for &i in applicable.iter().filter(|&&i| !ignores[i].file_wide) {
+            attached[i] = true;
+            if ignores[i].reason.is_none() {
+                findings.push(ignore_without_reason(&ignores[i], None));
+            }
+        }
+        prev_end_line = stmt.end_line;
         let is_control = matches!(stmt.node, NodeEnum::TransactionStmt(_));
         if ctx.in_transaction && !is_control {
             let effects = match &analysis {
@@ -245,6 +292,7 @@ fn analyze_unit(
             analysis,
             new_table,
             findings,
+            suppressed,
         });
         ctx.observe(&stmt.node);
         schema.observe(&stmt.node);
@@ -259,5 +307,28 @@ fn analyze_unit(
     if ctx.in_transaction && transaction.worth_reporting() {
         report.transactions.push(transaction);
     }
+    for (ignore, attached) in ignores.iter().zip(attached) {
+        if ignore.reason.is_none() && (ignore.file_wide || !attached) {
+            report
+                .findings
+                .push(ignore_without_reason(ignore, Some(ignore.line)));
+        }
+    }
     report
+}
+
+fn ignore_without_reason(ignore: &Ignore, line: Option<usize>) -> Finding {
+    Finding {
+        rule: "ignore-without-reason",
+        severity: Severity::Warning,
+        message: format!(
+            "lockline:ignore for {} has no reason; say why this is safe.",
+            ignore.rules.join(",")
+        ),
+        help: Some(
+            "Write the reason after the rule ids: -- lockline:ignore <rule> <why this is safe>"
+                .to_string(),
+        ),
+        line,
+    }
 }
