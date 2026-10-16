@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use lockline::config::{ConfigError, FileConfig, exclude_set, find_config, load_config};
 use lockline::input::collect_units;
 use lockline::model::Severity;
 use lockline::report::{HumanOptions, render_human};
@@ -43,11 +44,13 @@ struct CheckArgs {
     #[arg(long, short)]
     quiet: bool,
     /// Exit with status 1 when there are findings of this severity or higher
-    #[arg(long, value_enum, default_value_t = FailOn::Error)]
-    fail_on: FailOn,
+    /// [default: error, or `fail_on` in lockline.toml]
+    #[arg(long, value_enum)]
+    fail_on: Option<FailOn>,
     /// How your migration tool runs each file
-    #[arg(long, value_enum, default_value_t = Transaction::PerUnit)]
-    transaction: Transaction,
+    /// [default: per-unit, or `transaction` in lockline.toml]
+    #[arg(long, value_enum)]
+    transaction: Option<Transaction>,
     /// When to use colors
     #[arg(long, value_enum, default_value_t = Color::Auto)]
     color: Color,
@@ -103,23 +106,50 @@ fn main() -> ExitCode {
 }
 
 fn check(args: CheckArgs) -> ExitCode {
+    let file_config = match load_project_config() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let exclude = match exclude_set(&file_config.exclude) {
+        Ok(set) => set,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        }
+    };
     let units = match collect_units(&args.paths, &mut io::stdin()) {
         Ok(collected) => {
             for warning in &collected.warnings {
                 eprintln!("warning: {warning}");
             }
-            collected.units
+            collected
+                .units
+                .into_iter()
+                .filter(|u| u.name == "<stdin>" || !exclude.is_match(&u.name))
+                .collect::<Vec<_>>()
         }
         Err(error) => {
             eprintln!("error: {error}");
             return ExitCode::from(2);
         }
     };
+    // Precedence: command-line flags > lockline.toml > defaults.
+    let transaction = match args.transaction {
+        Some(Transaction::PerUnit) => TransactionMode::PerUnit,
+        Some(Transaction::None) => TransactionMode::None,
+        None => file_config.transaction.unwrap_or_default(),
+    };
+    let threshold = match args.fail_on {
+        Some(FailOn::Error) => Severity::Error,
+        Some(FailOn::Warning) => Severity::Warning,
+        None => file_config.fail_on.unwrap_or(Severity::Error),
+    };
     let config = Config {
-        transaction: match args.transaction {
-            Transaction::PerUnit => TransactionMode::PerUnit,
-            Transaction::None => TransactionMode::None,
-        },
+        transaction,
+        rules: file_config.rules.into_iter().collect(),
     };
     let report = analyze(&units, &config);
     let options = HumanOptions {
@@ -134,14 +164,22 @@ fn check(args: CheckArgs) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let threshold = match args.fail_on {
-        FailOn::Error => Severity::Error,
-        FailOn::Warning => Severity::Warning,
-    };
     if report.max_severity().is_some_and(|s| s >= threshold) {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// The closest `lockline.toml` from the current directory up, or defaults.
+fn load_project_config() -> Result<FileConfig, ConfigError> {
+    let cwd = std::env::current_dir().map_err(|source| ConfigError::Io {
+        path: ".".to_string(),
+        source,
+    })?;
+    match find_config(&cwd) {
+        Some(path) => load_config(&path),
+        None => Ok(FileConfig::default()),
     }
 }
 

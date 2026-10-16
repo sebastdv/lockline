@@ -13,6 +13,9 @@ pg_query = "6.2"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 owo-colors = "4"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+globset = "0.4"
 
 [dev-dependencies]
 insta = "1"

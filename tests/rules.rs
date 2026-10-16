@@ -2,8 +2,6 @@ use lockline::TransactionMode::{self, None as Autocommit, PerUnit};
 use lockline::model::Finding;
 use lockline::{Config, MigrationUnit, UnitReport, analyze};
 
-// `Config` gains fields in later tasks; the struct update keeps this helper stable.
-#[allow(clippy::needless_update)]
 fn unit(sql: &str, mode: TransactionMode) -> UnitReport {
     let units = [MigrationUnit {
         name: "m.sql".into(),

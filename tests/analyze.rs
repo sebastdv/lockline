@@ -7,7 +7,11 @@ fn run(sql: &str, mode: TransactionMode) -> UnitReport {
         name: "m.sql".into(),
         sql: sql.into(),
     }];
-    let mut report = analyze(&units, &Config { transaction: mode });
+    let config = Config {
+        transaction: mode,
+        ..Config::default()
+    };
+    let mut report = analyze(&units, &config);
     report.units.remove(0)
 }
 

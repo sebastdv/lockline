@@ -215,3 +215,110 @@ fn explain_unknown_exits_two() {
         .code(2)
         .stderr("error: unknown rule \"no-such-rule\"; run \"lockline rules\" to list them\n");
 }
+
+fn project(config: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("lockline.toml"), config).unwrap();
+    for (name, sql) in files {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, sql).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn config_turns_rule_off() {
+    let dir = project(
+        "[rules]\ncreate-index-not-concurrently = \"off\"\n",
+        &[("m/0001.sql", "CREATE INDEX i ON users (email);")],
+    );
+    lockline()
+        .current_dir(dir.path())
+        .args(["check", "m"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("0 errors, 0 warnings"));
+}
+
+#[test]
+fn config_raises_warning_to_error() {
+    let dir = project(
+        "[rules]\nmissing-lock-timeout = \"error\"\n",
+        &[("m/0001.sql", "ALTER TABLE users ADD COLUMN a int;")],
+    );
+    lockline()
+        .current_dir(dir.path())
+        .args(["check", "m"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("error[missing-lock-timeout]"));
+}
+
+#[test]
+fn config_fail_on_and_cli_override() {
+    let dir = project(
+        "fail_on = \"warning\"\n",
+        &[("m/0001.sql", "ALTER TABLE users ADD COLUMN a int;")],
+    );
+    lockline()
+        .current_dir(dir.path())
+        .args(["check", "m"])
+        .assert()
+        .code(1);
+    lockline()
+        .current_dir(dir.path())
+        .args(["check", "m", "--fail-on", "error"])
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn config_transaction_and_cli_override() {
+    let dir = project(
+        "transaction = \"none\"\n",
+        &[(
+            "m/0001.sql",
+            "CREATE INDEX CONCURRENTLY i ON users (email);",
+        )],
+    );
+    lockline()
+        .current_dir(dir.path())
+        .args(["check", "m"])
+        .assert()
+        .code(0);
+    lockline()
+        .current_dir(dir.path())
+        .args(["check", "m", "--transaction", "per-unit"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn exclude_skips_files() {
+    let dir = project(
+        "exclude = [\"m/legacy/**\"]\n",
+        &[
+            ("m/legacy/0001.sql", "CREATE INDEX i ON users (email);"),
+            ("m/0002.sql", "SELECT 1;"),
+        ],
+    );
+    lockline()
+        .current_dir(dir.path())
+        .args(["check", "m"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("in 1 file"));
+}
+
+#[test]
+fn bad_config_exits_two() {
+    let dir = project("fail_onn = \"error\"\n", &[("m/0001.sql", "SELECT 1;")]);
+    lockline()
+        .current_dir(dir.path())
+        .args(["check", "m"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::starts_with("error: "))
+        .stderr(predicate::str::contains("fail_onn"));
+}

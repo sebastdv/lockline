@@ -1,10 +1,11 @@
 //! Walks migration units statement by statement and produces the report.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use pg_query::NodeEnum;
 
 use crate::catalog::analyze_statement;
+use crate::config::RuleLevel;
 use crate::context::{UnitContext, ends_transaction};
 use crate::locks::LockMode;
 use crate::model::{Analysis, Effect, Finding, Severity, TableRef};
@@ -34,6 +35,30 @@ pub enum TransactionMode {
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub transaction: TransactionMode,
+    /// Severity overrides from `lockline.toml` (`off` drops the rule's findings).
+    pub rules: HashMap<String, RuleLevel>,
+}
+
+impl Config {
+    /// Applies the `[rules]` overrides: drops `off` rules and changes severities.
+    fn apply_levels(&self, findings: &mut Vec<Finding>) {
+        findings.retain_mut(|f| match self.rules.get(f.rule) {
+            Some(RuleLevel::Off) => false,
+            Some(RuleLevel::Warning) => {
+                f.severity = Severity::Warning;
+                true
+            }
+            Some(RuleLevel::Error) => {
+                f.severity = Severity::Error;
+                true
+            }
+            None => true,
+        });
+    }
+
+    fn is_off(&self, rule: &str) -> bool {
+        self.rules.get(rule) == Some(&RuleLevel::Off)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +233,7 @@ fn analyze_unit(
                 help: None,
                 line: error.line,
             });
+            apply_config(&mut report, config);
             return report;
         }
     };
@@ -314,7 +340,19 @@ fn analyze_unit(
                 .push(ignore_without_reason(ignore, Some(ignore.line)));
         }
     }
+    apply_config(&mut report, config);
     report
+}
+
+fn apply_config(report: &mut UnitReport, config: &Config) {
+    if config.rules.is_empty() {
+        return;
+    }
+    config.apply_levels(&mut report.findings);
+    for stmt in &mut report.statements {
+        config.apply_levels(&mut stmt.findings);
+        stmt.suppressed.retain(|s| !config.is_off(s.rule));
+    }
 }
 
 fn ignore_without_reason(ignore: &Ignore, line: Option<usize>) -> Finding {
