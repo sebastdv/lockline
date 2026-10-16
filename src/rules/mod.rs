@@ -1,11 +1,15 @@
 //! Lint rules. Each rule looks at one statement in context and may report one finding.
 
+mod add_check_without_not_valid;
 mod add_column_not_null_without_default;
 mod add_column_rewrite;
 mod add_column_unknown_default;
+mod add_foreign_key_without_not_valid;
+mod add_unique_without_index;
 mod alter_column_type;
 mod backfill_in_migration;
 mod cannot_run_in_transaction;
+mod constraints;
 mod create_index_not_concurrently;
 mod drop_index_not_concurrently;
 mod refresh_matview_not_concurrently;
@@ -66,6 +70,9 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         Box::new(add_column_unknown_default::AddColumnUnknownDefault),
         Box::new(alter_column_type::AlterColumnType),
         Box::new(set_not_null::SetNotNull),
+        Box::new(add_check_without_not_valid::AddCheckWithoutNotValid),
+        Box::new(add_foreign_key_without_not_valid::AddForeignKeyWithoutNotValid),
+        Box::new(add_unique_without_index::AddUniqueWithoutIndex),
     ]
 }
 

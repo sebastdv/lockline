@@ -332,3 +332,148 @@ fn add_column_rewrite_ignores_other_subcommands() {
         ["alter-column-type"]
     );
 }
+
+// --- Task 10: constraints ---
+
+#[test]
+fn add_check_without_not_valid_fires() {
+    let sql = "ALTER TABLE users ADD CONSTRAINT positive_age CHECK (age > 0);";
+    assert_eq!(fired(sql, PerUnit), ["add-check-without-not-valid"]);
+    let f = finding(sql, PerUnit, "add-check-without-not-valid");
+    assert_eq!(
+        f.message,
+        "Adding a CHECK constraint scans all of \"users\" under an ACCESS EXCLUSIVE lock."
+    );
+    assert_eq!(
+        f.help.unwrap(),
+        "ALTER TABLE users ADD CONSTRAINT positive_age CHECK (age > 0) NOT VALID;\n\
+         ALTER TABLE users VALIDATE CONSTRAINT positive_age;"
+    );
+    let unnamed = finding(
+        "ALTER TABLE users ADD CHECK (age > 0);",
+        PerUnit,
+        "add-check-without-not-valid",
+    );
+    assert!(
+        unnamed
+            .help
+            .unwrap()
+            .contains("VALIDATE CONSTRAINT users_check;")
+    );
+    let inline = finding(
+        "ALTER TABLE users ADD COLUMN age int CHECK (age > 0);",
+        PerUnit,
+        "add-check-without-not-valid",
+    );
+    let help = inline.help.unwrap();
+    assert!(
+        help.starts_with("Add the column without the constraint, then:\n"),
+        "{help}"
+    );
+    assert!(help.contains("CHECK (age > 0) NOT VALID;"), "{help}");
+}
+
+#[test]
+fn add_check_without_not_valid_skips() {
+    assert!(
+        fired(
+            "ALTER TABLE users ADD CONSTRAINT c CHECK (age > 0) NOT VALID;",
+            PerUnit
+        )
+        .is_empty()
+    );
+    assert!(
+        fired(
+            "CREATE TABLE t (age int); ALTER TABLE t ADD CHECK (age > 0);",
+            PerUnit
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn add_foreign_key_without_not_valid_fires() {
+    let sql = "ALTER TABLE orders ADD CONSTRAINT orders_user_fk FOREIGN KEY (user_id) REFERENCES users (id);";
+    assert_eq!(fired(sql, PerUnit), ["add-foreign-key-without-not-valid"]);
+    let f = finding(sql, PerUnit, "add-foreign-key-without-not-valid");
+    assert_eq!(
+        f.message,
+        "Adding a foreign key scans \"orders\" and blocks writes to \"orders\" and \"users\" until it is validated."
+    );
+    let help = f.help.unwrap();
+    assert!(help.contains("REFERENCES users (id) NOT VALID;"), "{help}");
+    assert!(
+        help.ends_with("ALTER TABLE orders VALIDATE CONSTRAINT orders_user_fk;"),
+        "{help}"
+    );
+
+    let inline = finding(
+        "ALTER TABLE orders ADD COLUMN user_id bigint REFERENCES users (id);",
+        PerUnit,
+        "add-foreign-key-without-not-valid",
+    );
+    let help = inline.help.unwrap();
+    assert!(
+        help.contains("CONSTRAINT orders_user_id_fkey FOREIGN KEY (user_id)"),
+        "{help}"
+    );
+}
+
+#[test]
+fn add_foreign_key_without_not_valid_skips() {
+    assert!(fired("ALTER TABLE orders ADD CONSTRAINT fk FOREIGN KEY (user_id) REFERENCES users (id) NOT VALID;", PerUnit).is_empty());
+    let new_source = "CREATE TABLE orders (id int, user_id int); \
+                      ALTER TABLE orders ADD CONSTRAINT fk FOREIGN KEY (user_id) REFERENCES users (id);";
+    assert!(fired(new_source, PerUnit).is_empty());
+}
+
+#[test]
+fn add_unique_without_index_fires() {
+    let sql = "ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE (email);";
+    assert_eq!(fired(sql, PerUnit), ["add-unique-without-index"]);
+    let f = finding(sql, PerUnit, "add-unique-without-index");
+    assert_eq!(
+        f.message,
+        "Adding a UNIQUE constraint builds an index under an ACCESS EXCLUSIVE lock on \"users\"."
+    );
+    assert_eq!(
+        f.help.unwrap(),
+        "CREATE UNIQUE INDEX CONCURRENTLY users_email_key_idx ON users (email);\n\
+         ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE USING INDEX users_email_key_idx;"
+    );
+    let pk = finding(
+        "ALTER TABLE users ADD PRIMARY KEY (id);",
+        PerUnit,
+        "add-unique-without-index",
+    );
+    assert!(pk.message.starts_with("Adding a PRIMARY KEY constraint"));
+    assert!(
+        pk.help
+            .unwrap()
+            .contains("ADD CONSTRAINT users_pkey PRIMARY KEY USING INDEX users_pkey_idx;")
+    );
+    let inline = finding(
+        "ALTER TABLE users ADD COLUMN code text UNIQUE;",
+        PerUnit,
+        "add-unique-without-index",
+    );
+    assert!(inline.help.unwrap().contains("ON users (code);"));
+}
+
+#[test]
+fn add_unique_without_index_skips() {
+    assert!(
+        fired(
+            "ALTER TABLE users ADD CONSTRAINT u UNIQUE USING INDEX users_email_idx;",
+            PerUnit
+        )
+        .is_empty()
+    );
+    assert!(
+        fired(
+            "CREATE TABLE t (id int); ALTER TABLE t ADD PRIMARY KEY (id);",
+            PerUnit
+        )
+        .is_empty()
+    );
+}
