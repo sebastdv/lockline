@@ -9,6 +9,7 @@ pub mod model;
 pub mod parse;
 pub mod report;
 pub mod rules;
+pub mod schema;
 pub mod volatility;
 
 pub use analyze::{

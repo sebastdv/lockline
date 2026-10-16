@@ -5,6 +5,7 @@ use crate::context::UnitContext;
 use crate::model::{Analysis, Finding, Severity};
 use crate::parse::parse_sql;
 use crate::rules::{self, RuleCtx};
+use crate::schema::Schema;
 
 /// One migration as it will run: a file, stdin, or one migration from a tool's output.
 #[derive(Debug, Clone)]
@@ -106,9 +107,11 @@ impl Report {
 
 pub fn analyze(units: &[MigrationUnit], config: &Config) -> Report {
     let rules = rules::all();
+    // The virtual schema accumulates across units, in the order they run.
+    let mut schema = Schema::default();
     let units = units
         .iter()
-        .map(|unit| analyze_unit(unit, config, &rules))
+        .map(|unit| analyze_unit(unit, config, &rules, &mut schema))
         .collect();
     Report { units }
 }
@@ -117,6 +120,7 @@ fn analyze_unit(
     unit: &MigrationUnit,
     config: &Config,
     rules: &[Box<dyn rules::Rule>],
+    schema: &mut Schema,
 ) -> UnitReport {
     let mut report = UnitReport {
         name: unit.name.clone(),
@@ -170,6 +174,7 @@ fn analyze_unit(
             findings,
         });
         ctx.observe(&stmt.node);
+        schema.observe(&stmt.node);
     }
     report
 }
