@@ -156,8 +156,8 @@ varios subcomandos se toma el lock máximo y el costo máximo.
 | `CREATE INDEX CONCURRENTLY` | SHARE UPDATE EXCLUSIVE | Scan (no bloquea escrituras) |
 | `DROP INDEX` | ACCESS EXCLUSIVE (tabla) | Metadata |
 | `DROP INDEX CONCURRENTLY` | SHARE UPDATE EXCLUSIVE | Metadata |
-| `REINDEX` (tabla/índice) | SHARE (tabla) | Rewrite del índice |
-| `REINDEX CONCURRENTLY` | SHARE UPDATE EXCLUSIVE | Rewrite del índice |
+| `REINDEX` (tabla/índice) | SHARE (tabla) | Scan (reconstruye los índices; la tabla no se reescribe) |
+| `REINDEX CONCURRENTLY` | SHARE UPDATE EXCLUSIVE | Scan |
 | `ALTER TABLE ... ADD COLUMN` (default no volátil o sin default) | ACCESS EXCLUSIVE | Metadata |
 | `ALTER TABLE ... ADD COLUMN` (default volátil, `serial`, identity, generated stored) | ACCESS EXCLUSIVE | Rewrite |
 | `ALTER TABLE ... ADD COLUMN` con restricción en línea (`REFERENCES`, `UNIQUE`, `PRIMARY KEY`, `CHECK`, `EXCLUDE`) | ACCESS EXCLUSIVE (+ SHARE ROW EXCLUSIVE en la tabla referenciada) | Scan |
@@ -171,7 +171,7 @@ varios subcomandos se toma el lock máximo y el costo máximo.
 | `ALTER TABLE ... VALIDATE CONSTRAINT` | SHARE UPDATE EXCLUSIVE | Scan |
 | `ALTER TABLE ... RENAME (tabla/columna/constraint)` | ACCESS EXCLUSIVE | Metadata |
 | `ALTER TABLE ... SET (storage params)` / `SET STATISTICS` | SHARE UPDATE EXCLUSIVE | Metadata |
-| `ALTER TABLE ... ATTACH PARTITION` | SHARE UPDATE EXCLUSIVE (padre) | Scan (de la partición) |
+| `ALTER TABLE ... ATTACH PARTITION` | SHARE UPDATE EXCLUSIVE (padre) + ACCESS EXCLUSIVE (partición) | Scan (de la partición) |
 | `ALTER TABLE ... DETACH PARTITION` | ACCESS EXCLUSIVE | Metadata |
 | `ALTER TABLE ... DETACH PARTITION CONCURRENTLY` | SHARE UPDATE EXCLUSIVE | Metadata |
 | `DROP TABLE` | ACCESS EXCLUSIVE | Metadata |
@@ -190,6 +190,9 @@ varios subcomandos se toma el lock máximo y el costo máximo.
 | `CREATE TABLE` (sin lo anterior), `CREATE TYPE`, `CREATE FUNCTION`, `CREATE VIEW`, `SET`, `BEGIN/COMMIT` | sin lock relevante sobre tablas existentes | — |
 
 Cualquier sentencia fuera del catálogo se informa como `not analyzed` (sin inventar lock).
+Un `DROP INDEX`/`REINDEX INDEX` cuyo índice no se vio crear en la corrida reporta el lock
+sobre el índice con la nota "on the index's table (not seen in this run)": el lock es real,
+pero la tabla no se conoce sin el esquema.
 Las celdas del catálogo son la hipótesis inicial; **si el test contra Postgres real dice otra
 cosa, gana el test** y se corrige el catálogo.
 
@@ -224,7 +227,7 @@ Identificadores en kebab-case (estables, se usan en supresiones y config).
 | `add-unique-without-index` | error | `ADD UNIQUE/PRIMARY KEY` sin `USING INDEX` |
 | `rewrite-table` | error | `VACUUM FULL`, `CLUSTER` |
 | `refresh-matview-not-concurrently` | warning | `REFRESH MATERIALIZED VIEW` sin `CONCURRENTLY` |
-| `missing-lock-timeout` | warning | se toma `ACCESS EXCLUSIVE` sobre tabla existente sin `SET lock_timeout` previo en la misma sesión/transacción |
+| `missing-lock-timeout` | warning | se toma `ACCESS EXCLUSIVE` sobre tabla existente sin `SET lock_timeout` previo en la misma sesión/transacción (una vez por unidad, para no inundar migraciones de Laravel) |
 | `rename-object` | warning | `RENAME` de tabla o columna (rompe el código desplegado que aún usa el nombre viejo) |
 | `drop-object` | warning | `DROP TABLE` / `DROP COLUMN` (misma razón; sugiere expand/contract) |
 | `backfill-in-migration` | warning | `UPDATE`/`DELETE` sin `WHERE` sobre tabla existente |
@@ -252,8 +255,8 @@ esquema virtual se acumula en toda la corrida (en orden).
 - `none`: autocommit (como `psql -f` sin `--single-transaction`).
 - Un `BEGIN`/`COMMIT`/`ROLLBACK` explícito en el SQL siempre manda sobre el modo.
 - Dentro de una transacción los locks **se acumulan hasta el COMMIT**: la salida humana
-  muestra, al final de cada transacción, la lista de locks retenidos
-  (`holds until commit: ACCESS EXCLUSIVE on users, SHARE on orders`).
+  muestra, al final de cada transacción con dos o más sentencias, la lista de locks
+  retenidos sobre tablas existentes (`holds until commit: ACCESS EXCLUSIVE on users, SHARE on orders`).
 
 **`lock_timeout`:** se registra `SET lock_timeout = ...` y `SET LOCAL lock_timeout`
 (este último solo hasta el fin de la transacción). Un valor `0` cuenta como "sin timeout".
@@ -296,8 +299,9 @@ docs/rules/          una página por regla (generada o escrita, coincide con `ex
 action.yml           GitHub Action compuesta
 ```
 
-**Supresión:** `-- lockline:ignore <rule-id>[,<rule-id>] <motivo>` en la línea anterior a la
-sentencia la suprime; `-- lockline:ignore-file <rule-id> <motivo>` en cualquier parte del
+**Supresión:** `-- lockline:ignore <rule-id>[,<rule-id>] <motivo>` como comentario de línea
+completa entre la sentencia anterior y la sentencia la suprime (un comentario al final de una
+línea con SQL no cuenta); `-- lockline:ignore-file <rule-id> <motivo>` en cualquier parte del
 archivo la suprime para todo el archivo. El motivo es obligatorio (sin motivo → `warning`
 `ignore-without-reason`). Las suprimidas cuentan en el resumen (`2 suppressed`).
 
