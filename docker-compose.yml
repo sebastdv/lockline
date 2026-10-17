@@ -1,0 +1,18 @@
+# Local PostgreSQL for tests/pg_verify.rs:
+#   docker compose up -d --wait
+#   LOCKLINE_TEST_DATABASE_URL=postgres://lockline:lockline@localhost:54317/lockline cargo test --test pg_verify
+# Another version: PG_VERSION=14 docker compose up -d --force-recreate --wait
+services:
+  postgres:
+    image: postgres:${PG_VERSION:-17}
+    ports:
+      - "54317:5432"
+    environment:
+      POSTGRES_USER: lockline
+      POSTGRES_PASSWORD: lockline
+      POSTGRES_DB: lockline
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "lockline"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
