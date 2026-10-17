@@ -1,5 +1,5 @@
 use pg_query::NodeEnum;
-use pg_query::protobuf::ObjectType;
+use pg_query::protobuf::{DropBehavior, ObjectType};
 
 use super::{Rule, RuleCtx};
 use crate::model::{Finding, Severity};
@@ -23,17 +23,38 @@ impl Rule for DropIndexNotConcurrently {
             return None;
         }
         ctx.existing_target()?;
-        let mut concurrent = stmt.clone();
-        concurrent.concurrent = true;
-        let help = NodeEnum::DropStmt(concurrent)
-            .deparse()
-            .unwrap_or_else(|_| ctx.stmt.text.replacen("INDEX ", "INDEX CONCURRENTLY ", 1));
+        // CONCURRENTLY takes one index at a time and does not support CASCADE.
+        let mut lines: Vec<String> = stmt
+            .objects
+            .iter()
+            .map(|object| {
+                let mut single = stmt.clone();
+                single.objects = vec![object.clone()];
+                single.concurrent = true;
+                single.behavior = DropBehavior::DropRestrict as i32;
+                NodeEnum::DropStmt(single)
+                    .deparse()
+                    .map(|sql| format!("{sql};"))
+                    .unwrap_or_else(|_| {
+                        format!(
+                            "{};",
+                            ctx.stmt.text.replacen("INDEX ", "INDEX CONCURRENTLY ", 1)
+                        )
+                    })
+            })
+            .collect();
+        if stmt.behavior == DropBehavior::DropCascade as i32 {
+            lines.push(
+                "(CONCURRENTLY does not support CASCADE; drop the dependent objects first.)"
+                    .to_string(),
+            );
+        }
+        lines.push("(CONCURRENTLY cannot run inside a transaction block)".to_string());
+        let help = lines.join("\n");
         Some(self.finding(
             "Dropping an index without CONCURRENTLY takes an ACCESS EXCLUSIVE lock on its table."
                 .to_string(),
-            Some(format!(
-                "{help};\n(CONCURRENTLY cannot run inside a transaction block)"
-            )),
+            Some(help),
         ))
     }
 }

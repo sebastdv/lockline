@@ -680,33 +680,47 @@ fn add_column_effect(column: &ColumnDef) -> CmdEffect {
     effect
 }
 
-/// Cost of the column itself: a rewrite when every row needs a computed value.
-pub(crate) fn add_column_cost(column: &ColumnDef) -> Cost {
+/// Why adding a column has to write every existing row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RewriteCause {
+    VolatileDefault,
+    Serial,
+    Identity,
+    Generated,
+}
+
+pub(crate) fn rewrite_cause(column: &ColumnDef) -> Option<RewriteCause> {
     let type_name = column
         .type_name
         .as_ref()
         .map_or("", |t| last_name(&t.names));
     if SERIAL_TYPES.contains(&type_name) {
-        return Cost::Rewrite;
+        return Some(RewriteCause::Serial);
     }
     let mut defaults = column.raw_default.iter().map(|b| &**b).collect::<Vec<_>>();
     for constraint in &column.constraints {
         let Some(NodeEnum::Constraint(c)) = constraint.node.as_ref() else {
             continue;
         };
-        if c.contype == ConstrType::ConstrIdentity as i32
-            || c.contype == ConstrType::ConstrGenerated as i32
-        {
-            return Cost::Rewrite;
+        if c.contype == ConstrType::ConstrIdentity as i32 {
+            return Some(RewriteCause::Identity);
+        }
+        if c.contype == ConstrType::ConstrGenerated as i32 {
+            return Some(RewriteCause::Generated);
         }
         if c.contype == ConstrType::ConstrDefault as i32 {
             defaults.extend(c.raw_expr.as_deref());
         }
     }
-    if defaults
+    defaults
         .into_iter()
         .any(|d| classify_default(d) == Volatility::Volatile)
-    {
+        .then_some(RewriteCause::VolatileDefault)
+}
+
+/// Cost of the column itself: a rewrite when every row needs a computed value.
+pub(crate) fn add_column_cost(column: &ColumnDef) -> Cost {
+    if rewrite_cause(column).is_some() {
         Cost::Rewrite
     } else {
         Cost::Metadata

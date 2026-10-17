@@ -720,3 +720,55 @@ fn reindex_message_mentions_queries() {
         "REINDEX without CONCURRENTLY blocks writes to \"users\", and queries that use its indexes, while the indexes are rebuilt."
     );
 }
+
+// --- Milestone 3, Task 7 ---
+
+#[test]
+fn drop_index_help_splits_and_drops_cascade() {
+    let f = finding(
+        "DROP INDEX IF EXISTS a, b CASCADE;",
+        Autocommit,
+        "drop-index-not-concurrently",
+    );
+    let help = f.help.unwrap();
+    assert!(
+        help.contains("DROP INDEX CONCURRENTLY IF EXISTS a;"),
+        "{help}"
+    );
+    assert!(
+        help.contains("DROP INDEX CONCURRENTLY IF EXISTS b;"),
+        "{help}"
+    );
+    assert!(
+        help_sql(&help).iter().all(|l| !l.contains("CASCADE")),
+        "{help}"
+    );
+    assert!(
+        help.contains("(CONCURRENTLY does not support CASCADE; drop the dependent objects first.)"),
+        "{help}"
+    );
+    for line in help_sql(&help) {
+        assert!(pg_query::parse(line).is_ok(), "{line}");
+    }
+}
+
+#[test]
+fn add_column_rewrite_help_by_cause() {
+    let help = |sql: &str| finding(sql, PerUnit, "add-column-rewrite").help.unwrap();
+    assert_eq!(
+        help("ALTER TABLE users ADD COLUMN token uuid DEFAULT gen_random_uuid();"),
+        "Add the column without a default (or with a constant default), then backfill in batches and set the default afterwards."
+    );
+    assert_eq!(
+        help("ALTER TABLE users ADD COLUMN n int GENERATED ALWAYS AS IDENTITY;"),
+        "Add a plain nullable column, backfill it in batches from a sequence, make it NOT NULL with the set-not-null pattern, then ALTER COLUMN ... ADD GENERATED ... AS IDENTITY (catalog-only)."
+    );
+    assert_eq!(
+        help("ALTER TABLE users ADD COLUMN n bigserial;"),
+        "Add a plain nullable column, backfill it in batches from a sequence, make it NOT NULL with the set-not-null pattern, then ALTER COLUMN ... ADD GENERATED ... AS IDENTITY (catalog-only)."
+    );
+    assert_eq!(
+        help("ALTER TABLE users ADD COLUMN t int GENERATED ALWAYS AS (a * 2) STORED;"),
+        "PostgreSQL cannot add a stored generated column without rewriting. Add a regular column kept in sync by the application or a trigger, and backfill it in batches."
+    );
+}
