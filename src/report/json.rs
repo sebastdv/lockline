@@ -140,7 +140,14 @@ fn statement(stmt: &StatementReport) -> JsonStatement<'_> {
         text: &stmt.text,
         analyzed: stmt.analysis != Analysis::NotAnalyzed,
         effects,
-        findings: stmt.findings.iter().map(finding).collect(),
+        findings: stmt
+            .findings
+            .iter()
+            .map(|f| JsonFinding {
+                line: f.line.or(Some(stmt.line)),
+                ..finding(f)
+            })
+            .collect(),
         suppressed: stmt
             .suppressed
             .iter()

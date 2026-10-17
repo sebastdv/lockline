@@ -303,7 +303,11 @@ fn analyze_unit(
             findings.extend(ignore_problems(&ignores[i], None, &known_rules));
         }
         prev_end_line = stmt.end_line;
-        let is_control = matches!(stmt.node, NodeEnum::TransactionStmt(_));
+        // BEGIN/COMMIT and SET do not count as statements holding locks.
+        let is_control = matches!(
+            stmt.node,
+            NodeEnum::TransactionStmt(_) | NodeEnum::VariableSetStmt(_)
+        );
         if ctx.in_transaction && !is_control {
             let effects = match &analysis {
                 Analysis::Locks(effects) => effects.as_slice(),

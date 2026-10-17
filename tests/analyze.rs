@@ -320,3 +320,12 @@ fn held_locks_summary() {
         )]
     );
 }
+
+#[test]
+fn set_does_not_count_as_a_statement_in_transaction_summary() {
+    let unit = run(
+        "SET LOCAL lock_timeout = '5s'; ALTER TABLE users ADD COLUMN a int;",
+        TransactionMode::PerUnit,
+    );
+    assert!(unit.transactions.is_empty(), "{:?}", unit.transactions);
+}

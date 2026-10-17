@@ -32,7 +32,7 @@ expression: render_json(&report())
               "severity": "error",
               "message": "Building an index without CONCURRENTLY blocks all writes to \"users\" until the build finishes.",
               "help": "CREATE INDEX CONCURRENTLY idx_users_email ON users USING btree (email);\n(CONCURRENTLY cannot run inside a transaction block)",
-              "line": null
+              "line": 1
             }
           ],
           "suppressed": []

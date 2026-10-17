@@ -69,3 +69,11 @@ fn find_config_walks_up() {
     let empty = tempfile::tempdir().unwrap();
     assert_eq!(find_config(empty.path()), None);
 }
+
+#[test]
+fn invalid_value_reports_position() {
+    let (_dir, path) = write_config("[rules]\ndrop-object = \"of\"\n");
+    let message = load_config(&path).unwrap_err().to_string();
+    assert!(message.contains("line 2"), "{message}");
+    assert!(message.contains("drop-object"), "{message}");
+}

@@ -36,6 +36,7 @@ fn json_is_valid_and_stable() {
         "create-index-not-concurrently"
     );
     assert_eq!(first["findings"][0]["severity"], "error");
+    assert_eq!(first["findings"][0]["line"], 1);
     assert_eq!(
         file["statements"][1]["suppressed"][0]["reason"],
         "runs off-peak"

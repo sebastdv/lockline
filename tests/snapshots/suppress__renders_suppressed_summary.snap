@@ -9,6 +9,4 @@ m.sql
        lock   SHARE on users — blocks writes, allows reads
        cost   full table scan (index build)
 
-  holds until commit: SHARE on users
-
 0 errors, 0 warnings, 1 suppressed in 1 file (2 statements)

@@ -93,7 +93,8 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
     })?;
     let raw: RawConfig = toml::from_str(&text).map_err(|e| ConfigError::Invalid {
         path: display.clone(),
-        message: e.message().to_string(),
+        // Display includes the line, the column and the offending key.
+        message: e.to_string().trim_end().to_string(),
     })?;
     let known = infos();
     if let Some(rule) = raw
