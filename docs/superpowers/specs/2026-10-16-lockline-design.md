@@ -168,11 +168,11 @@ varios subcomandos se toma el lock máximo y el costo máximo.
 | `ALTER TABLE ... ADD CONSTRAINT CHECK` | ACCESS EXCLUSIVE | Scan (Metadata si `NOT VALID`) |
 | `ALTER TABLE ... ADD CONSTRAINT FOREIGN KEY` | SHARE ROW EXCLUSIVE (ambas tablas) | Scan (Metadata si `NOT VALID`) |
 | `ALTER TABLE ... ADD CONSTRAINT UNIQUE / PRIMARY KEY` | ACCESS EXCLUSIVE | Scan (construye índice) — Metadata con `USING INDEX` |
-| `ALTER TABLE ... VALIDATE CONSTRAINT` | SHARE UPDATE EXCLUSIVE | Scan |
+| `ALTER TABLE ... VALIDATE CONSTRAINT` | SHARE UPDATE EXCLUSIVE (+ ROW SHARE en la tabla referenciada si es FK; verificado) | Scan |
 | `ALTER TABLE ... RENAME (tabla/columna/constraint)` | ACCESS EXCLUSIVE | Metadata |
 | `ALTER TABLE ... SET (storage params)` / `SET STATISTICS` | SHARE UPDATE EXCLUSIVE | Metadata |
 | `ALTER TABLE ... ATTACH PARTITION` | SHARE UPDATE EXCLUSIVE (padre) + ACCESS EXCLUSIVE (partición) | Scan (de la partición) |
-| `ALTER TABLE ... DETACH PARTITION` | ACCESS EXCLUSIVE | Metadata |
+| `ALTER TABLE ... DETACH PARTITION` | ACCESS EXCLUSIVE (padre y partición; verificado) | Metadata |
 | `ALTER TABLE ... DETACH PARTITION CONCURRENTLY` | SHARE UPDATE EXCLUSIVE | Metadata |
 | `DROP TABLE` | ACCESS EXCLUSIVE | Metadata |
 | `TRUNCATE` | ACCESS EXCLUSIVE | Metadata |

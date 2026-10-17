@@ -745,3 +745,45 @@ fn reindex_note_mentions_index_locks() {
     let e = single_effect("REINDEX TABLE users");
     assert!(e.note.unwrap().contains("ACCESS EXCLUSIVE on each index"));
 }
+
+#[test]
+fn validate_foreign_key_locks_the_referenced_table() {
+    // Observed on PostgreSQL 17: ROW SHARE on the referenced table.
+    let setup = "CREATE TABLE orgs (id int PRIMARY KEY); CREATE TABLE users (org_id int); \
+                 ALTER TABLE users ADD CONSTRAINT users_org_fk FOREIGN KEY (org_id) REFERENCES orgs (id) NOT VALID;";
+    let Analysis::Locks(e) =
+        analyze_after(setup, "ALTER TABLE users VALIDATE CONSTRAINT users_org_fk")
+    else {
+        panic!("expected locks");
+    };
+    assert_eq!(
+        (e[0].lock, e[0].cost),
+        (LockMode::ShareUpdateExclusive, Cost::Scan)
+    );
+    assert_eq!(e[1].table, table("orgs"));
+    assert_eq!((e[1].lock, e[1].cost), (LockMode::RowShare, Cost::Metadata));
+
+    let unnamed = "CREATE TABLE orgs (id int PRIMARY KEY); CREATE TABLE users (org_id int); \
+                   ALTER TABLE users ADD FOREIGN KEY (org_id) REFERENCES orgs (id) NOT VALID;";
+    let Analysis::Locks(e) = analyze_after(
+        unnamed,
+        "ALTER TABLE users VALIDATE CONSTRAINT users_org_id_fkey",
+    ) else {
+        panic!("expected locks");
+    };
+    assert_eq!(e.len(), 2, "PostgreSQL's default name is resolved: {e:?}");
+
+    // A CHECK constraint (or an unseen one) has no referenced table.
+    assert_eq!(effects("ALTER TABLE users VALIDATE CONSTRAINT c").len(), 1);
+}
+
+#[test]
+fn detach_partition_locks_the_partition() {
+    // Observed on PostgreSQL 17: ACCESS EXCLUSIVE on the partition being detached.
+    let e = effects("ALTER TABLE events DETACH PARTITION events_2025");
+    assert_eq!(e[1].table, table("events_2025"));
+    assert_eq!(
+        (e[1].lock, e[1].cost),
+        (LockMode::AccessExclusive, Cost::Metadata)
+    );
+}

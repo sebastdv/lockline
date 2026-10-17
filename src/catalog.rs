@@ -526,7 +526,16 @@ fn alter_cmd_effect(cmd: &AlterTableCmd, table: &TableRef, schema: &Schema) -> O
             };
             add_constraint_effect(c)?
         }
-        AtValidateConstraint => CmdEffect::new(ShareUpdateExclusive, Cost::Scan),
+        AtValidateConstraint => {
+            let mut effect = CmdEffect::new(ShareUpdateExclusive, Cost::Scan);
+            // Validating a foreign key reads the referenced table (verified on PostgreSQL).
+            if let Some(referenced) = schema.foreign_key_target(table, &cmd.name) {
+                effect
+                    .extra
+                    .push(Effect::new(referenced.clone(), RowShare, Cost::Metadata));
+            }
+            effect
+        }
         AtSetStatistics | AtSetOptions | AtResetOptions | AtSetRelOptions | AtResetRelOptions
         | AtClusterOn | AtDropCluster => CmdEffect::new(ShareUpdateExclusive, Cost::Metadata),
         AtAddIdentity | AtSetIdentity | AtDropIdentity | AtReplicaIdentity | AtChangeOwner
@@ -552,13 +561,21 @@ fn alter_cmd_effect(cmd: &AlterTableCmd, table: &TableRef, schema: &Schema) -> O
             effect
         }
         AtDetachPartition => {
-            let concurrent = matches!(def, Some(NodeEnum::PartitionCmd(p)) if p.concurrent);
-            let lock = if concurrent {
-                ShareUpdateExclusive
-            } else {
-                AccessExclusive
+            let Some(NodeEnum::PartitionCmd(p)) = def else {
+                return None;
             };
-            CmdEffect::new(lock, Cost::Metadata)
+            if p.concurrent {
+                CmdEffect::new(ShareUpdateExclusive, Cost::Metadata)
+            } else {
+                let mut effect = CmdEffect::new(AccessExclusive, Cost::Metadata);
+                // The partition is locked too (verified on PostgreSQL).
+                effect.extra.push(Effect::new(
+                    TableRef::from_range_var(p.name.as_ref()?),
+                    AccessExclusive,
+                    Cost::Metadata,
+                ));
+                effect
+            }
         }
         _ => return None,
     };

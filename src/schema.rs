@@ -16,6 +16,16 @@ use pg_query::protobuf::{
 use crate::model::TableRef;
 use crate::volatility::last_name;
 
+fn column_constraints(column: &pg_query::protobuf::ColumnDef) -> impl Iterator<Item = &Constraint> {
+    column
+        .constraints
+        .iter()
+        .filter_map(|c| match c.node.as_ref() {
+            Some(NodeEnum::Constraint(c)) => Some(&**c),
+            _ => None,
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeSpec {
     /// Last component of the type name as the parser normalizes it (`varchar`, `int4`…).
@@ -78,6 +88,8 @@ pub struct Schema {
 struct TableInfo {
     columns: HashMap<String, TypeSpec>,
     not_null_checks: Vec<NotNullCheck>,
+    /// Foreign key constraint name -> referenced table.
+    foreign_keys: HashMap<String, TableRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +111,11 @@ impl Schema {
                 .iter()
                 .any(|c| c.column == column && c.validated)
         })
+    }
+
+    /// The table a foreign key constraint of `table` references.
+    pub fn foreign_key_target(&self, table: &TableRef, constraint: &str) -> Option<&TableRef> {
+        self.tables.get(table)?.foreign_keys.get(constraint)
     }
 
     pub fn index_table(&self, index: &TableRef) -> Option<&TableRef> {
@@ -123,8 +140,14 @@ impl Schema {
                                 info.columns
                                     .insert(column.colname.clone(), TypeSpec::from_type_name(t));
                             }
+                            for c in column_constraints(column) {
+                                info.add_foreign_key(c, &table.name, Some(&column.colname));
+                            }
                         }
-                        Some(NodeEnum::Constraint(c)) => info.add_check(c),
+                        Some(NodeEnum::Constraint(c)) => {
+                            info.add_check(c);
+                            info.add_foreign_key(c, &table.name, None);
+                        }
                         _ => {}
                     }
                 }
@@ -156,10 +179,8 @@ impl Schema {
         let Some(relation) = &stmt.relation else {
             return;
         };
-        let info = self
-            .tables
-            .entry(TableRef::from_range_var(relation))
-            .or_default();
+        let table = TableRef::from_range_var(relation);
+        let info = self.tables.entry(table.clone()).or_default();
         for cmd in &stmt.cmds {
             let Some(NodeEnum::AlterTableCmd(cmd)) = cmd.node.as_ref() else {
                 continue;
@@ -177,6 +198,11 @@ impl Schema {
                         };
                         info.columns.insert(name, TypeSpec::from_type_name(t));
                     }
+                    if let Some(NodeEnum::ColumnDef(column)) = def {
+                        for c in column_constraints(column) {
+                            info.add_foreign_key(c, &table.name, Some(&column.colname));
+                        }
+                    }
                 }
                 Ok(AlterTableType::AtDropColumn) => {
                     info.columns.remove(&cmd.name);
@@ -185,6 +211,7 @@ impl Schema {
                 Ok(AlterTableType::AtAddConstraint) => {
                     if let Some(NodeEnum::Constraint(c)) = def {
                         info.add_check(c);
+                        info.add_foreign_key(c, &table.name, None);
                     }
                 }
                 Ok(AlterTableType::AtValidateConstraint) => {
@@ -196,6 +223,7 @@ impl Schema {
                 }
                 Ok(AlterTableType::AtDropConstraint) => {
                     info.not_null_checks.retain(|c| c.name != cmd.name);
+                    info.foreign_keys.remove(&cmd.name);
                 }
                 _ => {}
             }
@@ -252,6 +280,35 @@ impl Schema {
 }
 
 impl TableInfo {
+    /// Records a foreign key under its name, or the one PostgreSQL generates
+    /// (`{table}_{columns}_fkey`).
+    fn add_foreign_key(&mut self, c: &Constraint, table: &str, inline_column: Option<&str>) {
+        if c.contype != ConstrType::ConstrForeign as i32 {
+            return;
+        }
+        let Some(referenced) = &c.pktable else {
+            return;
+        };
+        let name = if c.conname.is_empty() {
+            let columns: Vec<&str> = match inline_column {
+                Some(column) => vec![column],
+                None => c
+                    .fk_attrs
+                    .iter()
+                    .filter_map(|a| match a.node.as_ref() {
+                        Some(NodeEnum::String(s)) => Some(s.sval.as_str()),
+                        _ => None,
+                    })
+                    .collect(),
+            };
+            format!("{table}_{}_fkey", columns.join("_"))
+        } else {
+            c.conname.clone()
+        };
+        self.foreign_keys
+            .insert(name, TableRef::from_range_var(referenced));
+    }
+
     /// Records `CHECK (col IS NOT NULL)`; other constraints are ignored.
     fn add_check(&mut self, c: &Constraint) {
         if c.contype != ConstrType::ConstrCheck as i32 {
