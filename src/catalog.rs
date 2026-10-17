@@ -82,17 +82,22 @@ pub fn analyze_statement(node: &NodeEnum, schema: &Schema) -> Analysis {
             None => Analysis::NotAnalyzed,
         },
         NodeEnum::RefreshMatViewStmt(stmt) => {
-            let lock = if stmt.concurrent {
-                LockMode::Exclusive
+            // CONCURRENTLY keeps the same file and applies the difference (verified on
+            // PostgreSQL); the plain refresh swaps in a new file.
+            let (lock, cost, note) = if stmt.concurrent {
+                (
+                    LockMode::Exclusive,
+                    Cost::Scan,
+                    "computes the new contents and applies the difference",
+                )
             } else {
-                LockMode::AccessExclusive
+                (
+                    LockMode::AccessExclusive,
+                    Cost::Rewrite,
+                    "rebuilds the materialized view",
+                )
             };
-            relation_effect(
-                stmt.relation.as_ref(),
-                lock,
-                Cost::Rewrite,
-                Some("rebuilds the materialized view"),
-            )
+            relation_effect(stmt.relation.as_ref(), lock, cost, Some(note))
         }
         NodeEnum::CreateTrigStmt(stmt) => relation_effect(
             stmt.relation.as_ref(),

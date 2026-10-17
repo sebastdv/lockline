@@ -511,7 +511,7 @@ fn statement_catalog() {
         ),
         (
             "REFRESH MATERIALIZED VIEW CONCURRENTLY stats",
-            Some(vec![e("stats", Exclusive, Rewrite)]),
+            Some(vec![e("stats", Exclusive, Scan)]),
         ),
         (
             "CREATE TRIGGER t BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION f()",
@@ -785,5 +785,20 @@ fn detach_partition_locks_the_partition() {
     assert_eq!(
         (e[1].lock, e[1].cost),
         (LockMode::AccessExclusive, Cost::Metadata)
+    );
+}
+
+#[test]
+fn concurrent_refresh_applies_a_diff() {
+    // Observed on PostgreSQL 17: the relfilenode does not change.
+    let e = single_effect("REFRESH MATERIALIZED VIEW CONCURRENTLY stats");
+    assert_eq!((e.lock, e.cost), (LockMode::Exclusive, Cost::Scan));
+    assert_eq!(
+        e.note.as_deref(),
+        Some("computes the new contents and applies the difference")
+    );
+    assert_eq!(
+        single_effect("REFRESH MATERIALIZED VIEW stats").cost,
+        Cost::Rewrite
     );
 }

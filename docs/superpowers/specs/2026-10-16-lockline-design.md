@@ -179,7 +179,7 @@ varios subcomandos se toma el lock máximo y el costo máximo.
 | `VACUUM FULL`, `CLUSTER` | ACCESS EXCLUSIVE | Rewrite |
 | `VACUUM`, `ANALYZE` | SHARE UPDATE EXCLUSIVE | Scan |
 | `REFRESH MATERIALIZED VIEW` | ACCESS EXCLUSIVE | Rewrite |
-| `REFRESH MATERIALIZED VIEW CONCURRENTLY` | EXCLUSIVE | Rewrite |
+| `REFRESH MATERIALIZED VIEW CONCURRENTLY` | EXCLUSIVE | Scan (aplica la diferencia; verificado) |
 | `CREATE TRIGGER` | SHARE ROW EXCLUSIVE | Metadata |
 | `INSERT / UPDATE / DELETE` | ROW EXCLUSIVE | Unknown (depende del `WHERE`) |
 | `CREATE TABLE` con `REFERENCES` a una tabla existente | SHARE ROW EXCLUSIVE (tabla referenciada) | Metadata |

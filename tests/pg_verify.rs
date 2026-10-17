@@ -277,8 +277,11 @@ fn observe_blocked(
         .ok_or_else(|| format!("{target} is not in the setup"))?;
     let mut holder = connect(url, schema)?;
     holder
+        // SHARE UPDATE EXCLUSIVE lets brief ACCESS SHARE locks through (VACUUM takes one to
+        // expand its relation list) and still stops every lock the catalog claims for these
+        // statements, so the wait we observe is the real one.
         .batch_execute(&format!(
-            "BEGIN; LOCK TABLE {target} IN ACCESS EXCLUSIVE MODE"
+            "BEGIN; LOCK TABLE {target} IN SHARE UPDATE EXCLUSIVE MODE"
         ))
         .map_err(err)?;
     let pid: i32 = a
@@ -347,9 +350,11 @@ fn compare(case: &Case, expected: &Analysis, observed: &Observed) -> Vec<String>
                     Cost::Rewrite if !rewritten => problems.push(format!(
                         "{sql}: catalog says {table} is rewritten, it was not"
                     )),
-                    Cost::Metadata | Cost::Scan if rewritten => problems.push(format!(
-                        "{sql}: catalog says {table} is not rewritten, it was"
-                    )),
+                    // TRUNCATE swaps in an empty file: a new relfilenode, but no rewrite
+                    // whose cost grows with the table.
+                    Cost::Metadata | Cost::Scan if rewritten && !is_truncate(sql) => problems.push(
+                        format!("{sql}: catalog says {table} is not rewritten, it was"),
+                    ),
                     _ => {}
                 }
             }
@@ -375,6 +380,12 @@ fn compare(case: &Case, expected: &Analysis, observed: &Observed) -> Vec<String>
         )),
     }
     problems
+}
+
+fn is_truncate(sql: &str) -> bool {
+    sql.trim_start()
+        .to_ascii_uppercase()
+        .starts_with("TRUNCATE")
 }
 
 static SCHEMA_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -542,5 +553,48 @@ fn alter_table_matches_postgres() {
         tx("ALTER TABLE users RENAME TO people"),
         tx("ALTER TABLE users RENAME COLUMN email TO mail"),
         tx("ALTER TABLE users RENAME CONSTRAINT users_pkey TO users_pk"),
+    ]);
+}
+
+// --- Task 3: other statements ---
+
+#[test]
+fn statements_match_postgres() {
+    verify(&[
+        tx("CREATE INDEX i ON users (email)"),
+        tx("DROP TABLE orders"),
+        tx("DROP INDEX users_email_idx"),
+        tx("TRUNCATE orders"),
+        tx("REINDEX TABLE users"),
+        tx("REINDEX INDEX users_email_idx"),
+        tx("ANALYZE users"),
+        tx("CLUSTER users USING users_pkey"),
+        tx("REFRESH MATERIALIZED VIEW stats"),
+        tx("REFRESH MATERIALIZED VIEW CONCURRENTLY stats"),
+        tx("CREATE TRIGGER t2 AFTER UPDATE ON users FOR EACH ROW EXECUTE FUNCTION touch()"),
+        tx("INSERT INTO users VALUES (50, 'x', 'n', 1, 1)"),
+        tx("UPDATE users SET age = 2"),
+        tx("DELETE FROM users WHERE id = 1"),
+        tx(
+            "CREATE TABLE events_2027 PARTITION OF events FOR VALUES FROM ('2027-01-01') TO ('2028-01-01')",
+        ),
+        tx("CREATE TABLE kids (extra int) INHERITS (plain)"),
+        tx("CREATE TABLE memberships (org_id bigint REFERENCES orgs (id))"),
+        tx("CREATE TABLE fresh (id int)"),
+        tx("CREATE OR REPLACE VIEW v AS SELECT 1 AS n"),
+        tx("COMMENT ON TABLE users IS 'x'"),
+        tx("COMMENT ON COLUMN users.email IS 'x'"),
+    ]);
+}
+
+#[test]
+fn non_transactional_match_postgres() {
+    verify(&[
+        blocking("CREATE INDEX CONCURRENTLY i3 ON users (age)"),
+        blocking("DROP INDEX CONCURRENTLY users_email_idx"),
+        blocking("REINDEX TABLE CONCURRENTLY users"),
+        blocking("ALTER TABLE events DETACH PARTITION events_2025 CONCURRENTLY"),
+        blocking("VACUUM users"),
+        blocking("VACUUM FULL users"),
     ]);
 }
