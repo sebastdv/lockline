@@ -541,8 +541,23 @@ fn alter_cmd_effect(cmd: &AlterTableCmd, table: &TableRef, schema: &Schema) -> O
             }
             effect
         }
-        AtSetStatistics | AtSetOptions | AtResetOptions | AtSetRelOptions | AtResetRelOptions
-        | AtClusterOn | AtDropCluster => CmdEffect::new(ShareUpdateExclusive, Cost::Metadata),
+        AtSetStatistics | AtSetOptions | AtResetOptions | AtClusterOn | AtDropCluster => {
+            CmdEffect::new(ShareUpdateExclusive, Cost::Metadata)
+        }
+        // Most storage parameters take SHARE UPDATE EXCLUSIVE; user_catalog_table takes
+        // ACCESS EXCLUSIVE (verified on PostgreSQL 14-17). The strongest option wins.
+        AtSetRelOptions | AtResetRelOptions => {
+            let lock = if names_option(def, "user_catalog_table") {
+                AccessExclusive
+            } else {
+                ShareUpdateExclusive
+            };
+            CmdEffect::new(lock, Cost::Metadata)
+        }
+        // Verified on PostgreSQL 14-17.
+        AtSetStorage | AtSetCompression | AtEnableRule | AtDisableRule => {
+            CmdEffect::new(AccessExclusive, Cost::Metadata)
+        }
         AtAddIdentity | AtSetIdentity | AtDropIdentity | AtReplicaIdentity | AtChangeOwner
         | AtAlterConstraint | AtEnableRowSecurity | AtDisableRowSecurity | AtForceRowSecurity
         | AtNoForceRowSecurity => CmdEffect::new(AccessExclusive, Cost::Metadata),
@@ -585,6 +600,16 @@ fn alter_cmd_effect(cmd: &AlterTableCmd, table: &TableRef, schema: &Schema) -> O
         _ => return None,
     };
     Some(effect)
+}
+
+/// Whether a `SET (...)` / `RESET (...)` option list mentions `name`.
+fn names_option(def: Option<&NodeEnum>, name: &str) -> bool {
+    let Some(NodeEnum::List(list)) = def else {
+        return false;
+    };
+    list.items
+        .iter()
+        .any(|item| matches!(item.node.as_ref(), Some(NodeEnum::DefElem(d)) if d.defname == name))
 }
 
 fn add_constraint_effect(c: &Constraint) -> Option<CmdEffect> {

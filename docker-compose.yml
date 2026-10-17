@@ -11,6 +11,10 @@ services:
       POSTGRES_USER: lockline
       POSTGRES_PASSWORD: lockline
       POSTGRES_DB: lockline
+    # Throwaway data: every start is a clean cluster, and switching PG_VERSION never
+    # meets files from another major version.
+    tmpfs:
+      - /var/lib/postgresql/data
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "lockline"]
       interval: 1s

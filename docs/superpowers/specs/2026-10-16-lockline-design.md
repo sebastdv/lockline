@@ -171,6 +171,7 @@ varios subcomandos se toma el lock máximo y el costo máximo.
 | `ALTER TABLE ... VALIDATE CONSTRAINT` | SHARE UPDATE EXCLUSIVE (+ ROW SHARE en la tabla referenciada si es FK; verificado) | Scan |
 | `ALTER TABLE ... RENAME (tabla/columna/constraint)` | ACCESS EXCLUSIVE | Metadata |
 | `ALTER TABLE ... SET (storage params)` / `SET STATISTICS` | SHARE UPDATE EXCLUSIVE | Metadata |
+| `ALTER TABLE ... SET/RESET (user_catalog_table)`, `SET STORAGE`, `SET COMPRESSION`, `ENABLE/DISABLE RULE` | ACCESS EXCLUSIVE (verificado en 14–17) | Metadata |
 | `ALTER TABLE ... ATTACH PARTITION` | SHARE UPDATE EXCLUSIVE (padre) + ACCESS EXCLUSIVE (partición) | Scan (de la partición) |
 | `ALTER TABLE ... DETACH PARTITION` | ACCESS EXCLUSIVE (padre y partición; verificado) | Metadata |
 | `ALTER TABLE ... DETACH PARTITION CONCURRENTLY` | SHARE UPDATE EXCLUSIVE | Metadata |

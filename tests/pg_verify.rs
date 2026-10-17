@@ -553,6 +553,17 @@ fn alter_table_matches_postgres() {
         tx("ALTER TABLE users RENAME TO people"),
         tx("ALTER TABLE users RENAME COLUMN email TO mail"),
         tx("ALTER TABLE users RENAME CONSTRAINT users_pkey TO users_pk"),
+        // Modeled from the Task 4 probes:
+        tx("ALTER TABLE users ALTER COLUMN email SET STORAGE EXTERNAL"),
+        tx("ALTER TABLE users ALTER COLUMN email SET COMPRESSION pglz"),
+        tx_after(RULE_SETUP, "ALTER TABLE plain ENABLE RULE plain_rule"),
+        tx_after(RULE_SETUP, "ALTER TABLE plain DISABLE RULE plain_rule"),
+        tx("ALTER TABLE users SET (user_catalog_table = true)"),
+        tx("ALTER TABLE users SET (fillfactor = 70, user_catalog_table = true)"),
+        tx_after(
+            "ALTER TABLE users SET (user_catalog_table = true);",
+            "ALTER TABLE users RESET (user_catalog_table)",
+        ),
     ]);
 }
 
@@ -596,5 +607,52 @@ fn non_transactional_match_postgres() {
         blocking("ALTER TABLE events DETACH PARTITION events_2025 CONCURRENTLY"),
         blocking("VACUUM users"),
         blocking("VACUUM FULL users"),
+    ]);
+}
+
+// --- Task 4: probes for statements the catalog does not model yet ---
+
+/// Prints what PostgreSQL does for each case, without comparing with the catalog.
+fn probe(cases: &[Case]) -> Vec<(String, Observed)> {
+    let Some(url) = database_url() else {
+        return Vec::new();
+    };
+    let mut seen = Vec::new();
+    for case in cases {
+        match observe(&url, case, &unique_schema()) {
+            Ok(observed) => {
+                println!(
+                    "{}\n    locks: {:?}\n    rewritten: {:?}",
+                    case.sql,
+                    observed
+                        .locks
+                        .iter()
+                        .map(|(t, l)| format!("{} on {t}", l.as_str()))
+                        .collect::<Vec<_>>(),
+                    observed.rewritten
+                );
+                seen.push((case.sql.to_string(), observed));
+            }
+            Err(e) => println!("{}\n    error: {e}", case.sql),
+        }
+    }
+    seen
+}
+
+const RULE_SETUP: &str = "CREATE RULE plain_rule AS ON INSERT TO plain DO INSTEAD NOTHING;";
+
+#[test]
+#[ignore = "prints observations; run with --ignored --nocapture"]
+fn probe_unmodeled() {
+    // Statements still outside the catalog. Probe them before modeling them.
+    probe(&[
+        tx_after(
+            RULE_SETUP,
+            "ALTER TABLE plain ENABLE ALWAYS RULE plain_rule",
+        ),
+        tx_after(
+            RULE_SETUP,
+            "ALTER TABLE plain ENABLE REPLICA RULE plain_rule",
+        ),
     ]);
 }

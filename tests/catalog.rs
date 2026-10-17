@@ -441,11 +441,11 @@ fn non_table_alter_is_not_analyzed() {
 #[test]
 fn unknown_subcommand_is_not_analyzed() {
     assert_eq!(
-        analyze("ALTER TABLE users ALTER COLUMN a SET STORAGE EXTERNAL"),
+        analyze("ALTER TABLE plain ENABLE ALWAYS RULE r"),
         Analysis::NotAnalyzed
     );
     assert_eq!(
-        analyze("ALTER TABLE users ADD COLUMN a int, ALTER COLUMN a SET STORAGE EXTERNAL"),
+        analyze("ALTER TABLE users ADD COLUMN a int, ENABLE ALWAYS RULE r"),
         Analysis::NotAnalyzed
     );
 }
@@ -800,5 +800,35 @@ fn concurrent_refresh_applies_a_diff() {
     assert_eq!(
         single_effect("REFRESH MATERIALIZED VIEW stats").cost,
         Cost::Rewrite
+    );
+}
+
+#[test]
+fn probed_subcommands_take_access_exclusive() {
+    // Observed on PostgreSQL 14, 15, 16 and 17: ACCESS EXCLUSIVE, no rewrite.
+    for sql in [
+        "ALTER TABLE users ALTER COLUMN email SET STORAGE EXTERNAL",
+        "ALTER TABLE users ALTER COLUMN email SET COMPRESSION pglz",
+        "ALTER TABLE plain ENABLE RULE plain_rule",
+        "ALTER TABLE plain DISABLE RULE plain_rule",
+        "ALTER TABLE users SET (user_catalog_table = true)",
+        "ALTER TABLE users SET (fillfactor = 70, user_catalog_table = true)",
+        "ALTER TABLE users RESET (user_catalog_table)",
+    ] {
+        let e = single_effect(sql);
+        assert_eq!(
+            (e.lock, e.cost),
+            (LockMode::AccessExclusive, Cost::Metadata),
+            "{sql}"
+        );
+    }
+    assert_eq!(
+        single_effect("ALTER TABLE users SET (fillfactor = 70)").lock,
+        LockMode::ShareUpdateExclusive
+    );
+    assert_eq!(
+        analyze("ALTER TABLE plain ENABLE ALWAYS RULE plain_rule"),
+        Analysis::NotAnalyzed,
+        "not probed yet"
     );
 }
