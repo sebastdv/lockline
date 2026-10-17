@@ -326,8 +326,11 @@ Precedencia: flags de CLI > `lockline.toml` > defaults.
 **Verificación contra Postgres real (`tests/pg_verify.rs`)** — implementada en el hito 3: lo
 esperado sale del propio catálogo; "reescribe" = cambia `relfilenode` (salvo `TRUNCATE`, que
 pone un archivo vacío); un lock extra sobre una tabla existente es un fallo; las sentencias
-sin transacción se observan desde otra sesión que retiene SHARE UPDATE EXCLUSIVE. Diseño
-original: por cada fila del catálogo,
+sin transacción se observan desde otra sesión que retiene un lock sobre una tabla por caso
+(SHARE UPDATE EXCLUSIVE por defecto; ACCESS SHARE para ver ACCESS EXCLUSIVE en una segunda
+tabla); "metadata" se verifica con `pg_stat_xact_user_tables.seq_scan` (sin lecturas). Límites
+conocidos: locks sobre particiones/hijos y partición por defecto, y locks de DML sobre tablas
+relacionadas por FK. Diseño original: por cada fila del catálogo,
 un caso con setup (crear tablas), la sentencia, y el lock esperado. El test abre una
 transacción, ejecuta la sentencia, consulta `pg_locks` unido a `pg_class` y compara el modo
 más fuerte tomado sobre la tabla con el del catálogo (las sentencias `CONCURRENTLY`, que no
