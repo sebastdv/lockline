@@ -8,7 +8,8 @@ and tells you, for every statement, which lock it takes, what that lock blocks, 
 it rewrites or scans the table. When a pattern is dangerous, it explains why and suggests
 the safe version.
 
-> **Status:** early development (milestone 2 of 4). The lock catalog covers `ALTER TABLE`,
+> **Status:** early development (milestone 3 of 4). Every lock and rewrite in the catalog is
+> verified against PostgreSQL 14, 15, 16 and 17. The lock catalog covers `ALTER TABLE`,
 > indexes, `DROP`, `REINDEX`, `VACUUM`, `CLUSTER`, `REFRESH`, triggers, DML, `COMMENT` and
 > `RENAME`; anything else is reported as `not analyzed` instead of guessed.
 
@@ -182,8 +183,31 @@ lockline stands on the shoulders of great tools, and you should look at them too
 
 lockline's angle is different: it **explains the lock of every statement** (not only the
 ones that break a rule), it **understands the migration's context** (new tables,
-transactions), and its lock catalog will be **verified against real PostgreSQL 14–17 in
-CI** (milestone 3). It will also read Laravel's `migrate --pretend` output directly.
+transactions, the schema of earlier files), and its lock catalog is **verified against real
+PostgreSQL 14–17 in CI**. It will also read Laravel's `migrate --pretend` output directly
+(milestone 4).
+
+## How the lock catalog is verified
+
+`tests/pg_verify.rs` runs about 80 statements against a real PostgreSQL and compares what
+happens with what lockline claims:
+
+- **Locks:** each statement runs inside `BEGIN … ROLLBACK` and the test reads its own locks
+  from `pg_locks`. Statements that cannot run in a transaction (`CONCURRENTLY`, `VACUUM`) are
+  observed from a second session while they wait for a lock the test holds.
+- **Rewrites:** a table is rewritten when its `pg_class.relfilenode` changes.
+- **Omissions:** a lock on an existing table that the catalog does not mention fails the test.
+
+The expected values come from lockline's own catalog, so the test checks exactly what the
+tool prints. When PostgreSQL disagrees, the catalog is fixed. CI runs it on PostgreSQL 14,
+15, 16 and 17; locally:
+
+```bash
+docker compose up -d --wait
+LOCKLINE_TEST_DATABASE_URL=postgres://lockline:lockline@localhost:54317/lockline cargo test --test pg_verify
+```
+
+Use `PG_VERSION=14 docker compose up -d --force-recreate --wait` to try another version.
 
 ## License
 

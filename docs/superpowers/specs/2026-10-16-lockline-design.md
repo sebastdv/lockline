@@ -323,7 +323,11 @@ Precedencia: flags de CLI > `lockline.toml` > defaults.
 - `sarif`: SARIF 2.1.0, una `rule` por regla con `helpUri` a `docs/rules/<id>.md`.
 - `github`: `::error file=...,line=...,title=...::mensaje` para anotar el PR.
 
-**Verificación contra Postgres real (`tests/pg_verify.rs`):** por cada fila del catálogo,
+**Verificación contra Postgres real (`tests/pg_verify.rs`)** — implementada en el hito 3: lo
+esperado sale del propio catálogo; "reescribe" = cambia `relfilenode` (salvo `TRUNCATE`, que
+pone un archivo vacío); un lock extra sobre una tabla existente es un fallo; las sentencias
+sin transacción se observan desde otra sesión que retiene SHARE UPDATE EXCLUSIVE. Diseño
+original: por cada fila del catálogo,
 un caso con setup (crear tablas), la sentencia, y el lock esperado. El test abre una
 transacción, ejecuta la sentencia, consulta `pg_locks` unido a `pg_class` y compara el modo
 más fuerte tomado sobre la tabla con el del catálogo (las sentencias `CONCURRENTLY`, que no

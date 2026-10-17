@@ -27,4 +27,7 @@ lockline check migrations/
   nivel de cada regla).
 - `--format json` entrega un reporte estable para otras herramientas.
 
-Estado: en desarrollo (hito 2 de 4). Licencia MIT o Apache-2.0.
+- Cada lock y cada reescritura del catálogo se verifica contra PostgreSQL 14, 15, 16 y 17
+  reales en CI (`tests/pg_verify.rs`).
+
+Estado: en desarrollo (hito 3 de 4). Licencia MIT o Apache-2.0.
