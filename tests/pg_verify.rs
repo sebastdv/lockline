@@ -60,7 +60,13 @@ struct Case {
     run: Run,
     /// Table the blocking session holds; `None` means the catalog's `effects[0]`.
     block_on: Option<&'static str>,
+    /// Lock mode the blocking session holds on it.
+    hold: &'static str,
 }
+
+/// Lets brief ACCESS SHARE locks through (VACUUM takes one to expand its relation list)
+/// and still stops every lock of SHARE UPDATE EXCLUSIVE or stronger.
+const DEFAULT_HOLD: &str = "SHARE UPDATE EXCLUSIVE";
 
 const fn tx(sql: &'static str) -> Case {
     tx_after("", sql)
@@ -72,6 +78,7 @@ const fn tx_after(extra_setup: &'static str, sql: &'static str) -> Case {
         sql,
         run: Run::InTransaction,
         block_on: None,
+        hold: DEFAULT_HOLD,
     }
 }
 
@@ -81,15 +88,23 @@ const fn blocking(sql: &'static str) -> Case {
         sql,
         run: Run::Blocking,
         block_on: None,
+        hold: DEFAULT_HOLD,
     }
 }
 
 const fn blocking_on(table: &'static str, sql: &'static str) -> Case {
+    blocking_holding(table, DEFAULT_HOLD, sql)
+}
+
+/// Blocking observation of a second table: holding ACCESS SHARE on it makes any ACCESS
+/// EXCLUSIVE request visible, even when other locks of the statement are granted first.
+const fn blocking_holding(table: &'static str, hold: &'static str, sql: &'static str) -> Case {
     Case {
         extra_setup: "",
         sql,
         run: Run::Blocking,
         block_on: Some(table),
+        hold,
     }
 }
 
@@ -121,6 +136,8 @@ struct Observed {
     locks: BTreeMap<String, LockMode>,
     /// Pre-existing relations whose relfilenode changed (the table was rewritten).
     rewritten: BTreeSet<String>,
+    /// Pre-existing tables read with a sequential scan (in-transaction cases only).
+    scanned: BTreeSet<String>,
 }
 
 /// oid -> (name, relfilenode, relkind) for the relations of the case's schema.
@@ -168,6 +185,17 @@ fn own_locks(client: &mut Client) -> Result<Vec<(u32, String)>, String> {
     Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
 }
 
+/// Sequential scans this transaction made on the schema's tables, by oid.
+fn sequential_scans(client: &mut Client, schema: &str) -> Result<Vec<(u32, i64)>, String> {
+    let rows = client
+        .query(
+            "SELECT relid, seq_scan FROM pg_stat_xact_user_tables WHERE schemaname = $1",
+            &[&schema],
+        )
+        .map_err(err)?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+}
+
 fn lock_mode(pg: &str) -> Option<LockMode> {
     Some(match pg {
         "AccessShareLock" => LockMode::AccessShare,
@@ -182,8 +210,20 @@ fn lock_mode(pg: &str) -> Option<LockMode> {
     })
 }
 
-fn build(before: &Relations, after: &Relations, modes: &[(u32, String)]) -> Observed {
+fn build(
+    before: &Relations,
+    after: &Relations,
+    modes: &[(u32, String)],
+    scans: &[(u32, i64)],
+) -> Observed {
     let mut observed = Observed::default();
+    for (oid, count) in scans {
+        if *count > 0
+            && let Some((name, _, _)) = before.get(oid)
+        {
+            observed.scanned.insert(name.clone());
+        }
+    }
     for (oid, mode) in modes {
         let Some((name, _, kind)) = before.get(oid) else {
             continue;
@@ -245,12 +285,24 @@ fn observe_in_schema(url: &str, case: &Case, schema: &str) -> Result<Observed, S
     match case.run {
         Run::InTransaction => {
             a.batch_execute("BEGIN").map_err(err)?;
+            // The counters also hold the setup's pending stats: only the difference counts.
+            let scans_before = sequential_scans(&mut a, schema)?;
             a.batch_execute(case.sql)
                 .map_err(|e| format!("statement failed: {e}"))?;
             let modes = own_locks(&mut a)?;
             let after = relations(&mut a, schema)?;
+            let scans: Vec<(u32, i64)> = sequential_scans(&mut a, schema)?
+                .into_iter()
+                .map(|(oid, count)| {
+                    let before = scans_before
+                        .iter()
+                        .find(|(o, _)| *o == oid)
+                        .map_or(0, |(_, c)| *c);
+                    (oid, count - before)
+                })
+                .collect();
             a.batch_execute("ROLLBACK").map_err(err)?;
-            Ok(build(&before, &after, &modes))
+            Ok(build(&before, &after, &modes, &scans))
         }
         Run::Blocking => observe_blocked(url, case, schema, a, &before),
     }
@@ -280,9 +332,7 @@ fn observe_blocked(
         // SHARE UPDATE EXCLUSIVE lets brief ACCESS SHARE locks through (VACUUM takes one to
         // expand its relation list) and still stops every lock the catalog claims for these
         // statements, so the wait we observe is the real one.
-        .batch_execute(&format!(
-            "BEGIN; LOCK TABLE {target} IN SHARE UPDATE EXCLUSIVE MODE"
-        ))
+        .batch_execute(&format!("BEGIN; LOCK TABLE {target} IN {} MODE", case.hold))
         .map_err(err)?;
     let pid: i32 = a
         .query_one("SELECT pg_backend_pid()", &[])
@@ -322,7 +372,7 @@ fn observe_blocked(
     };
     result.map_err(|e| format!("statement failed: {e}"))?;
     let after = relations(&mut a, schema)?;
-    Ok(build(before, &after, &[(target_oid, mode)]))
+    Ok(build(before, &after, &[(target_oid, mode)], &[]))
 }
 
 /// Human-readable disagreements between the catalog and PostgreSQL.
@@ -331,7 +381,29 @@ fn compare(case: &Case, expected: &Analysis, observed: &Observed) -> Vec<String>
     let mut problems = Vec::new();
     match expected {
         Analysis::Locks(effects) => {
-            for effect in effects {
+            // A blocked observation only sees the table the other session holds.
+            let effects: Vec<_> = match (case.run, case.block_on) {
+                (Run::Blocking, Some(held)) => {
+                    effects.iter().filter(|e| e.table.name == held).collect()
+                }
+                (Run::Blocking, None) => effects.iter().take(1).collect(),
+                (Run::InTransaction, _) => effects.iter().collect(),
+            };
+            // Claiming "metadata only" is the claim that can hurt; a Scan that turns out
+            // cheaper only errs on the safe side.
+            // TRUNCATE resets the table's pending statistics, which confuses the counter;
+            // measured separately, it does not scan and its time does not grow with size.
+            if let Some(main) = effects.first()
+                && main.cost == Cost::Metadata
+                && observed.scanned.contains(&main.table.name)
+                && !is_truncate(sql)
+            {
+                problems.push(format!(
+                    "{sql}: catalog says {} is metadata-only, PostgreSQL scanned it",
+                    main.table.name
+                ));
+            }
+            for effect in &effects {
                 let table = &effect.table.name;
                 match observed.locks.get(table) {
                     Some(lock) if *lock == effect.lock => {}
@@ -641,6 +713,9 @@ fn probe(cases: &[Case]) -> Vec<(String, Observed)> {
 
 const RULE_SETUP: &str = "CREATE RULE plain_rule AS ON INSERT TO plain DO INSTEAD NOTHING;";
 
+const FK_SETUP: &str =
+    "ALTER TABLE orders ADD CONSTRAINT orders_user_fk FOREIGN KEY (user_id) REFERENCES users (id);";
+
 #[test]
 #[ignore = "prints observations; run with --ignored --nocapture"]
 fn probe_unmodeled() {
@@ -655,4 +730,84 @@ fn probe_unmodeled() {
             "ALTER TABLE plain ENABLE REPLICA RULE plain_rule",
         ),
     ]);
+}
+
+// --- Final review fixes: pure checks of the comparison logic ---
+
+fn observed(locks: &[(&str, LockMode)], rewritten: &[&str], scanned: &[&str]) -> Observed {
+    Observed {
+        locks: locks.iter().map(|(t, l)| (t.to_string(), *l)).collect(),
+        rewritten: rewritten.iter().map(|t| t.to_string()).collect(),
+        scanned: scanned.iter().map(|t| t.to_string()).collect(),
+    }
+}
+
+#[test]
+fn compare_flags_a_scan_claimed_as_metadata() {
+    let case = tx("ALTER TABLE users ALTER COLUMN age SET DEFAULT 1");
+    let problems = compare(
+        &case,
+        &expected(&case),
+        &observed(&[("users", LockMode::AccessExclusive)], &[], &["users"]),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("scanned"), "{problems:?}");
+}
+
+#[test]
+fn compare_in_blocking_mode_only_checks_the_held_table() {
+    let case = blocking_holding(
+        "events_2025",
+        "ACCESS SHARE",
+        "ALTER TABLE events DETACH PARTITION events_2025 CONCURRENTLY",
+    );
+    let problems = compare(
+        &case,
+        &expected(&case),
+        &observed(&[("events_2025", LockMode::AccessExclusive)], &[], &[]),
+    );
+    assert!(problems.is_empty(), "{problems:?}");
+}
+
+#[test]
+fn foreign_key_drops_match_postgres() {
+    verify(&[
+        tx_after(
+            FK_SETUP,
+            "ALTER TABLE orders DROP CONSTRAINT orders_user_fk",
+        ),
+        tx_after(FK_SETUP, "ALTER TABLE orders DROP COLUMN user_id"),
+        tx_after(FK_SETUP, "DROP TABLE orders"),
+    ]);
+}
+
+#[test]
+fn second_tables_of_non_transactional_statements_match_postgres() {
+    verify(&[blocking_holding(
+        "events_2025",
+        "ACCESS SHARE",
+        "ALTER TABLE events DETACH PARTITION events_2025 CONCURRENTLY",
+    )]);
+}
+
+#[test]
+fn scan_detection_sees_a_real_scan() {
+    // Without this, "metadata-only" claims could pass because nothing is ever seen.
+    let Some(url) = database_url() else {
+        return;
+    };
+    let checked = observe(
+        &url,
+        &tx("ALTER TABLE users ADD CONSTRAINT c CHECK (age > 0)"),
+        &unique_schema(),
+    )
+    .unwrap();
+    assert!(checked.scanned.contains("users"), "{checked:?}");
+    let not_valid = observe(
+        &url,
+        &tx("ALTER TABLE users ADD CONSTRAINT c CHECK (age > 0) NOT VALID"),
+        &unique_schema(),
+    )
+    .unwrap();
+    assert!(!not_valid.scanned.contains("users"), "{not_valid:?}");
 }
