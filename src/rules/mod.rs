@@ -100,6 +100,23 @@ impl RuleCtx<'_> {
             _ => None,
         }
     }
+
+    /// Every table the statement locks that was not created in this unit, in order.
+    pub fn existing_targets(&self) -> Vec<&Effect> {
+        match self.analysis {
+            Analysis::Locks(effects) => effects.iter().filter(|e| !e.new_table).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// `"a", "b"`: table names for a message.
+pub(crate) fn quoted_names(effects: &[&Effect]) -> String {
+    effects
+        .iter()
+        .map(|e| format!("\"{}\"", e.table.plain()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Subcommands of an `ALTER TABLE` on a table (not a view, index, type…).

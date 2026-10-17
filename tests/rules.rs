@@ -772,3 +772,40 @@ fn add_column_rewrite_help_by_cause() {
         "PostgreSQL cannot add a stored generated column without rewriting. Add a regular column kept in sync by the application or a trigger, and backfill it in batches."
     );
 }
+
+// --- Milestone 3, Task 8 ---
+
+#[test]
+fn drop_table_names_every_existing_table() {
+    let f = finding(
+        "CREATE TABLE new_t (a int); DROP TABLE new_t, users, orders;",
+        PerUnit,
+        "drop-object",
+    );
+    assert!(
+        f.message
+            .starts_with("Dropping \"users\", \"orders\" breaks"),
+        "{}",
+        f.message
+    );
+}
+
+#[test]
+fn vacuum_full_several_tables() {
+    let f = finding("VACUUM FULL users, orders;", Autocommit, "rewrite-table");
+    assert!(
+        f.message
+            .starts_with("VACUUM FULL rewrites \"users\", \"orders\""),
+        "{}",
+        f.message
+    );
+}
+
+#[test]
+fn inline_primary_key_is_not_null() {
+    let rules = fired("ALTER TABLE users ADD COLUMN q int PRIMARY KEY;", PerUnit);
+    assert!(
+        rules.contains(&"add-column-not-null-without-default"),
+        "{rules:?}"
+    );
+}

@@ -37,7 +37,8 @@ impl Rule for AddColumnNotNullWithoutDefault {
                     .type_name
                     .as_ref()
                     .map_or("", |t| last_name(&t.names));
-                has(ConstrType::ConstrNotnull)
+                // PRIMARY KEY implies NOT NULL.
+                (has(ConstrType::ConstrNotnull) || has(ConstrType::ConstrPrimary))
                     && column.raw_default.is_none()
                     && !has(ConstrType::ConstrDefault)
                     && !has(ConstrType::ConstrIdentity)
