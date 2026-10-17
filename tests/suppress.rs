@@ -142,3 +142,45 @@ fn renders_suppressed_summary() {
     );
     insta::assert_snapshot!(out);
 }
+
+#[test]
+fn ignore_inside_dollar_body_does_not_count() {
+    let r = report(
+        "CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$\n\
+         -- lockline:ignore-file drop-object hidden\n\
+         SELECT 1;\n\
+         $$;\n\
+         DROP TABLE users;",
+    );
+    assert_eq!(rules(&r), ["drop-object"]);
+    assert_eq!(r.counts().suppressed, 0);
+}
+
+#[test]
+fn ignore_inside_block_comment_does_not_count() {
+    let r = report(
+        "/*\n\
+         -- lockline:ignore create-index-not-concurrently x\n\
+         */\n\
+         CREATE INDEX i ON users (e);",
+    );
+    assert_eq!(rules(&r), ["create-index-not-concurrently"]);
+}
+
+#[test]
+fn unknown_rule_in_ignore_warns() {
+    let r = report("-- lockline:ignore drop-objet typo\nDROP TABLE users;");
+    assert_eq!(rules(&r), ["drop-object", "ignore-unknown-rule"]);
+    let f = r.units[0].statements[0]
+        .findings
+        .iter()
+        .find(|f| f.rule == "ignore-unknown-rule")
+        .unwrap();
+    assert_eq!(
+        f.message,
+        "lockline:ignore names an unknown rule \"drop-objet\"; run \"lockline rules\" to list them."
+    );
+    let file_wide = report("-- lockline:ignore-file nope reason\nSELECT 1;");
+    assert_eq!(file_wide.units[0].findings[0].rule, "ignore-unknown-rule");
+    assert_eq!(file_wide.units[0].findings[0].line, Some(1));
+}

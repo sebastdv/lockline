@@ -240,6 +240,7 @@ fn analyze_unit(
     };
 
     let ignores = parse_ignores(&unit.sql);
+    let known_rules: Vec<&'static str> = rules::infos().iter().map(|i| i.id).collect();
     let mut attached = vec![false; ignores.len()];
     let mut prev_end_line = 0;
     let mut ctx = UnitContext::new(config.transaction);
@@ -299,9 +300,7 @@ fn analyze_unit(
         });
         for &i in applicable.iter().filter(|&&i| !ignores[i].file_wide) {
             attached[i] = true;
-            if ignores[i].reason.is_none() {
-                findings.push(ignore_without_reason(&ignores[i], None));
-            }
+            findings.extend(ignore_problems(&ignores[i], None, &known_rules));
         }
         prev_end_line = stmt.end_line;
         let is_control = matches!(stmt.node, NodeEnum::TransactionStmt(_));
@@ -336,10 +335,10 @@ fn analyze_unit(
         report.transactions.push(transaction);
     }
     for (ignore, attached) in ignores.iter().zip(attached) {
-        if ignore.reason.is_none() && (ignore.file_wide || !attached) {
+        if ignore.file_wide || !attached {
             report
                 .findings
-                .push(ignore_without_reason(ignore, Some(ignore.line)));
+                .extend(ignore_problems(ignore, Some(ignore.line), &known_rules));
         }
     }
     apply_config(&mut report, config);
@@ -355,6 +354,30 @@ fn apply_config(report: &mut UnitReport, config: &Config) {
         config.apply_levels(&mut stmt.findings);
         stmt.suppressed.retain(|s| !config.is_off(s.rule));
     }
+}
+
+/// `ignore-without-reason` and `ignore-unknown-rule` findings for one ignore comment.
+fn ignore_problems(ignore: &Ignore, line: Option<usize>, known: &[&str]) -> Vec<Finding> {
+    let mut problems = Vec::new();
+    if ignore.reason.is_none() {
+        problems.push(ignore_without_reason(ignore, line));
+    }
+    for id in ignore
+        .rules
+        .iter()
+        .filter(|id| !known.contains(&id.as_str()))
+    {
+        problems.push(Finding {
+            rule: "ignore-unknown-rule",
+            severity: Severity::Warning,
+            message: format!(
+                "lockline:ignore names an unknown rule \"{id}\"; run \"lockline rules\" to list them."
+            ),
+            help: Some("Check the rule id; a misspelled id suppresses nothing.".to_string()),
+            line,
+        });
+    }
+    problems
 }
 
 fn ignore_without_reason(ignore: &Ignore, line: Option<usize>) -> Finding {

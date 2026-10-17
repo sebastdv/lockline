@@ -186,7 +186,7 @@ fn rules_lists_every_rule() {
         .stdout
         .clone();
     let text = String::from_utf8(output).unwrap();
-    assert_eq!(text.lines().count(), 20);
+    assert_eq!(text.lines().count(), 21);
     assert!(
         text.lines()
             .any(|l| l.starts_with("create-index-not-concurrently") && l.contains(" error "))

@@ -136,6 +136,7 @@ Each rule links to its page, which `lockline explain <rule>` also prints.
 | [`drop-object`](docs/rules/drop-object.md) | warning | Flags dropping a table or a column that already exists. |
 | [`parse-error`](docs/rules/parse-error.md) | error | The file is not valid PostgreSQL 17 SQL, so lockline cannot analyze any of it. |
 | [`ignore-without-reason`](docs/rules/ignore-without-reason.md) | warning | Flags a `lockline:ignore` comment that does not say why the finding is safe to ignore. |
+| [`ignore-unknown-rule`](docs/rules/ignore-unknown-rule.md) | warning | Flags a `lockline:ignore` comment that names a rule lockline does not have. |
 
 ## Suppressing a finding
 

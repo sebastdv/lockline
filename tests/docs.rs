@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use lockline::rules::infos;
 
-const ALL_IDS: [&str; 20] = [
+const ALL_IDS: [&str; 21] = [
     "create-index-not-concurrently",
     "drop-index-not-concurrently",
     "reindex-not-concurrently",
@@ -23,6 +23,7 @@ const ALL_IDS: [&str; 20] = [
     "backfill-in-migration",
     "parse-error",
     "ignore-without-reason",
+    "ignore-unknown-rule",
 ];
 
 #[test]

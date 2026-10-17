@@ -163,6 +163,7 @@ pub fn infos() -> Vec<RuleInfo> {
     for (id, severity) in [
         ("parse-error", Severity::Error),
         ("ignore-without-reason", Severity::Warning),
+        ("ignore-unknown-rule", Severity::Warning),
     ] {
         let docs = docs_for(id);
         infos.push(RuleInfo {
@@ -214,6 +215,7 @@ fn docs_for(id: &str) -> &'static str {
         "backfill-in-migration" => include_str!("../../docs/rules/backfill-in-migration.md"),
         "parse-error" => include_str!("../../docs/rules/parse-error.md"),
         "ignore-without-reason" => include_str!("../../docs/rules/ignore-without-reason.md"),
+        "ignore-unknown-rule" => include_str!("../../docs/rules/ignore-unknown-rule.md"),
         _ => "",
     }
 }
