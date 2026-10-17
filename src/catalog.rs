@@ -269,11 +269,25 @@ fn range_vars(nodes: &[Node]) -> impl Iterator<Item = TableRef> + '_ {
 fn analyze_drop(stmt: &DropStmt, schema: &Schema) -> Analysis {
     let names = stmt.objects.iter().filter_map(qualified_name);
     if stmt.remove_type == ObjectType::ObjectTable as i32 {
-        locks(
-            names
-                .map(|t| Effect::new(t, LockMode::AccessExclusive, Cost::Metadata))
-                .collect(),
-        )
+        let dropped: Vec<TableRef> = names.collect();
+        let mut effects: Vec<Effect> = dropped
+            .iter()
+            .map(|t| Effect::new(t.clone(), LockMode::AccessExclusive, Cost::Metadata))
+            .collect();
+        // The dropped tables' foreign keys lose their triggers on the referenced tables,
+        // which takes ACCESS EXCLUSIVE there (verified on PostgreSQL).
+        for table in &dropped {
+            for referenced in schema.referenced_tables(table, None) {
+                if !effects.iter().any(|e| e.table == *referenced) {
+                    effects.push(Effect::new(
+                        referenced.clone(),
+                        LockMode::AccessExclusive,
+                        Cost::Metadata,
+                    ));
+                }
+            }
+        }
+        locks(effects)
     } else if stmt.remove_type == ObjectType::ObjectIndex as i32 {
         let lock = if stmt.concurrent {
             LockMode::ShareUpdateExclusive
@@ -497,8 +511,25 @@ fn alter_cmd_effect(cmd: &AlterTableCmd, table: &TableRef, schema: &Schema) -> O
             };
             add_column_effect(column)
         }
-        AtDropColumn | AtDropNotNull | AtColumnDefault | AtDropConstraint => {
-            CmdEffect::new(AccessExclusive, Cost::Metadata)
+        AtDropNotNull | AtColumnDefault => CmdEffect::new(AccessExclusive, Cost::Metadata),
+        // Dropping a foreign key (or the column it is on) also removes its triggers on the
+        // referenced table: ACCESS EXCLUSIVE there too (verified on PostgreSQL).
+        AtDropColumn | AtDropConstraint => {
+            let referenced = if cmd.subtype == AtDropColumn as i32 {
+                schema.referenced_tables(table, Some(&cmd.name))
+            } else {
+                schema
+                    .foreign_key_target(table, &cmd.name)
+                    .into_iter()
+                    .collect()
+            };
+            let mut effect = CmdEffect::new(AccessExclusive, Cost::Metadata);
+            for other in referenced.into_iter().filter(|t| *t != table) {
+                effect
+                    .extra
+                    .push(Effect::new(other.clone(), AccessExclusive, Cost::Metadata));
+            }
+            effect
         }
         AtAlterColumnType => {
             let Some(NodeEnum::ColumnDef(column)) = def else {
@@ -585,7 +616,18 @@ fn alter_cmd_effect(cmd: &AlterTableCmd, table: &TableRef, schema: &Schema) -> O
                 return None;
             };
             if p.concurrent {
-                CmdEffect::new(ShareUpdateExclusive, Cost::Metadata)
+                // The second of its two transactions takes ACCESS EXCLUSIVE on the partition
+                // (verified on PostgreSQL).
+                let mut effect = CmdEffect::new(ShareUpdateExclusive, Cost::Metadata);
+                effect.extra.push(
+                    Effect::new(
+                        TableRef::from_range_var(p.name.as_ref()?),
+                        AccessExclusive,
+                        Cost::Metadata,
+                    )
+                    .with_note("in its second transaction"),
+                );
+                effect
             } else {
                 let mut effect = CmdEffect::new(AccessExclusive, Cost::Metadata);
                 // The partition is locked too (verified on PostgreSQL).

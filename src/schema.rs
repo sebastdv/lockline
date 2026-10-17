@@ -5,7 +5,7 @@
 //! safe type widenings, `SET NOT NULL` backed by a validated check, and the table behind an
 //! index name.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use pg_query::NodeEnum;
 use pg_query::protobuf::{
@@ -88,8 +88,15 @@ pub struct Schema {
 struct TableInfo {
     columns: HashMap<String, TypeSpec>,
     not_null_checks: Vec<NotNullCheck>,
-    /// Foreign key constraint name -> referenced table.
-    foreign_keys: HashMap<String, TableRef>,
+    /// Foreign key constraint name -> what it references.
+    foreign_keys: BTreeMap<String, ForeignKey>,
+}
+
+#[derive(Debug, Clone)]
+struct ForeignKey {
+    referenced: TableRef,
+    /// Columns of this table the key is on.
+    columns: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,7 +122,26 @@ impl Schema {
 
     /// The table a foreign key constraint of `table` references.
     pub fn foreign_key_target(&self, table: &TableRef, constraint: &str) -> Option<&TableRef> {
-        self.tables.get(table)?.foreign_keys.get(constraint)
+        self.tables
+            .get(table)?
+            .foreign_keys
+            .get(constraint)
+            .map(|fk| &fk.referenced)
+    }
+
+    /// Tables referenced by the foreign keys of `table`, optionally only those on `column`.
+    pub fn referenced_tables(&self, table: &TableRef, column: Option<&str>) -> Vec<&TableRef> {
+        let Some(info) = self.tables.get(table) else {
+            return Vec::new();
+        };
+        let mut found: Vec<&TableRef> = Vec::new();
+        for fk in info.foreign_keys.values() {
+            let matches = column.is_none_or(|c| fk.columns.iter().any(|k| k == c));
+            if matches && !found.contains(&&fk.referenced) {
+                found.push(&fk.referenced);
+            }
+        }
+        found
     }
 
     pub fn index_table(&self, index: &TableRef) -> Option<&TableRef> {
@@ -207,6 +233,8 @@ impl Schema {
                 Ok(AlterTableType::AtDropColumn) => {
                     info.columns.remove(&cmd.name);
                     info.not_null_checks.retain(|c| c.column != cmd.name);
+                    info.foreign_keys
+                        .retain(|_, fk| !fk.columns.contains(&cmd.name));
                 }
                 Ok(AlterTableType::AtAddConstraint) => {
                     if let Some(NodeEnum::Constraint(c)) = def {
@@ -289,24 +317,29 @@ impl TableInfo {
         let Some(referenced) = &c.pktable else {
             return;
         };
+        let columns: Vec<String> = match inline_column {
+            Some(column) => vec![column.to_string()],
+            None => c
+                .fk_attrs
+                .iter()
+                .filter_map(|a| match a.node.as_ref() {
+                    Some(NodeEnum::String(s)) => Some(s.sval.clone()),
+                    _ => None,
+                })
+                .collect(),
+        };
         let name = if c.conname.is_empty() {
-            let columns: Vec<&str> = match inline_column {
-                Some(column) => vec![column],
-                None => c
-                    .fk_attrs
-                    .iter()
-                    .filter_map(|a| match a.node.as_ref() {
-                        Some(NodeEnum::String(s)) => Some(s.sval.as_str()),
-                        _ => None,
-                    })
-                    .collect(),
-            };
             format!("{table}_{}_fkey", columns.join("_"))
         } else {
             c.conname.clone()
         };
-        self.foreign_keys
-            .insert(name, TableRef::from_range_var(referenced));
+        self.foreign_keys.insert(
+            name,
+            ForeignKey {
+                referenced: TableRef::from_range_var(referenced),
+                columns,
+            },
+        );
     }
 
     /// Records `CHECK (col IS NOT NULL)`; other constraints are ignored.

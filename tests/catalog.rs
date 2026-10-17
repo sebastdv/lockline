@@ -832,3 +832,47 @@ fn probed_subcommands_take_access_exclusive() {
         "not probed yet"
     );
 }
+
+const FK_SETUP: &str = "CREATE TABLE users (id int PRIMARY KEY); \
+    CREATE TABLE orders (id int, user_id int); \
+    ALTER TABLE orders ADD CONSTRAINT orders_user_fk FOREIGN KEY (user_id) REFERENCES users (id);";
+
+fn effect_summary(setup: &str, sql: &str) -> Vec<(String, LockMode)> {
+    match analyze_after(setup, sql) {
+        Analysis::Locks(e) => e
+            .into_iter()
+            .map(|e| (e.table.to_string(), e.lock))
+            .collect(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn dropping_a_foreign_key_locks_the_referenced_table() {
+    // Observed on PostgreSQL 17: ACCESS EXCLUSIVE on the referenced table too.
+    let expected = vec![
+        ("orders".to_string(), LockMode::AccessExclusive),
+        ("users".to_string(), LockMode::AccessExclusive),
+    ];
+    for sql in [
+        "ALTER TABLE orders DROP CONSTRAINT orders_user_fk",
+        "ALTER TABLE orders DROP COLUMN user_id",
+        "DROP TABLE orders",
+    ] {
+        assert_eq!(effect_summary(FK_SETUP, sql), expected, "{sql}");
+    }
+    // A column without a foreign key does not touch other tables.
+    assert_eq!(
+        effect_summary(FK_SETUP, "ALTER TABLE orders DROP COLUMN id"),
+        vec![("orders".to_string(), LockMode::AccessExclusive)]
+    );
+}
+
+#[test]
+fn detach_concurrently_locks_the_partition_in_its_second_transaction() {
+    let e = effects("ALTER TABLE events DETACH PARTITION events_2025 CONCURRENTLY");
+    assert_eq!(e[0].lock, LockMode::ShareUpdateExclusive);
+    assert_eq!(e[1].table, table("events_2025"));
+    assert_eq!(e[1].lock, LockMode::AccessExclusive);
+    assert_eq!(e[1].note.as_deref(), Some("in its second transaction"));
+}
