@@ -8,6 +8,8 @@
 dice qué lock toma, qué bloquea (lecturas, escrituras) y si reescribe o recorre la tabla.
 Si el patrón es peligroso, explica por qué y sugiere la versión segura.
 
+![lockline revisando una carpeta de migraciones SQL y luego la salida de migrate --pretend de Laravel](docs/demo.gif)
+
 ```bash
 lockline check migrations/
 ```

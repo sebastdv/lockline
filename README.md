@@ -8,6 +8,8 @@ and tells you, for every statement, which lock it takes, what that lock blocks, 
 it rewrites or scans the table. When a pattern is dangerous, it explains why and suggests
 the safe version.
 
+![lockline checking a folder of SQL migrations, then the output of Laravel's migrate --pretend](docs/demo.gif)
+
 > **Status:** v0.1, feature-complete. The locks, rewrites and "metadata only"
 > claims for the statements in `tests/pg_verify.rs` are verified against PostgreSQL 14, 15,
 > 16 and 17 (see [known gaps](#known-gaps)). The lock catalog covers `ALTER TABLE`,
