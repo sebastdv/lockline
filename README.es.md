@@ -25,10 +25,17 @@ lockline check migrations/
 - Un hallazgo se suprime con `-- lockline:ignore <regla> <motivo>` en la línea anterior.
 - `lockline.toml` fija la configuración del proyecto (transacciones, umbral, exclusiones y
   nivel de cada regla).
-- `--format json` entrega un reporte estable para otras herramientas.
+- `--format json` entrega un reporte estable para otras herramientas; `--format sarif`, el
+  formato de code scanning de GitHub, y `--format github`, anotaciones en el PR.
+- Lee la salida de Laravel: `php artisan migrate --pretend | lockline check --from laravel -`.
+  Cada migración se reporta con el nombre de su archivo PHP.
+- `--history` aprende el esquema de migraciones anteriores (una carpeta de `.sql` o un
+  volcado como el de `php artisan schema:dump`) sin reportarlas.
+- Trae una GitHub Action (`uses: sebastdv/lockline@v0.1.0`) que instala un binario verificado
+  con su checksum y anota el PR. Hay binarios para macOS y Linux en cada release.
 
 - Los locks, las reescrituras y las afirmaciones de "solo metadata" de las sentencias de
   `tests/pg_verify.rs` se verifican contra PostgreSQL 14, 15, 16 y 17 reales (ver los límites
   conocidos en el README en inglés).
 
-Estado: en desarrollo (hito 3 de 4). Licencia MIT o Apache-2.0.
+Estado: v0.1 completa (los cuatro hitos). Licencia MIT o Apache-2.0.

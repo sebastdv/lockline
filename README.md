@@ -8,7 +8,7 @@ and tells you, for every statement, which lock it takes, what that lock blocks, 
 it rewrites or scans the table. When a pattern is dangerous, it explains why and suggests
 the safe version.
 
-> **Status:** early development (milestone 3 of 4). The locks, rewrites and "metadata only"
+> **Status:** v0.1, feature-complete. The locks, rewrites and "metadata only"
 > claims for the statements in `tests/pg_verify.rs` are verified against PostgreSQL 14, 15,
 > 16 and 17 (see [known gaps](#known-gaps)). The lock catalog covers `ALTER TABLE`,
 > indexes, `DROP`, `REINDEX`, `VACUUM`, `CLUSTER`, `REFRESH`, triggers, DML, `COMMENT` and
@@ -66,10 +66,20 @@ The exit code is `1` when there are errors, so it can gate a pull request.
 From source (requires Rust 1.88+ and a C compiler):
 
 ```bash
-cargo install --git https://github.com/<you>/lockline
+cargo install --git https://github.com/sebastdv/lockline
 ```
 
-Prebuilt binaries and a GitHub Action are planned (milestone 4).
+Prebuilt binaries for macOS (Apple Silicon and Intel) and Linux (x86_64 and arm64) are
+attached to each [release](https://github.com/sebastdv/lockline/releases), with a SHA-256
+checksum:
+
+```bash
+target=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+curl -fsSLO "https://github.com/sebastdv/lockline/releases/latest/download/lockline-$target.tar.gz"
+tar -xzf "lockline-$target.tar.gz" && sudo mv "lockline-$target/lockline" /usr/local/bin/
+```
+
+In GitHub Actions, use the [action](#in-ci) instead.
 
 ## Usage
 
@@ -81,6 +91,10 @@ lockline check migrations/ --quiet            # only statements with findings
 lockline check migrations/ --fail-on warning  # also fail on warnings
 lockline check migrations/ --transaction none # files run in autocommit (psql -f)
 lockline check migrations/ --format json      # machine-readable output
+lockline check migrations/ --format sarif     # SARIF 2.1.0, for GitHub code scanning
+lockline check migrations/ --format github    # GitHub Actions annotations
+lockline check migrations/0042_new.sql --history migrations/   # learn the schema from earlier files
+php artisan migrate --pretend | lockline check --from laravel -
 lockline rules                                # every rule and its severity
 lockline explain set-not-null                 # why a rule matters and what to do instead
 ```
@@ -169,11 +183,66 @@ missing-lock-timeout = "error"
 Unknown keys and unknown rule ids are errors (exit code 2), so a typo never silently
 disables a rule.
 
-## JSON output
+## Laravel
 
-`--format json` prints a stable document (`"version": 1`) with every file, statement,
-effect (table, lock, `blocks_reads`, `blocks_writes`, cost), finding, suppression and held
-lock, plus a summary. The exit code is the same as in the human format.
+lockline reads the SQL Laravel would run, so it sees exactly what the schema builder
+generates (`->change()`, `->index()`, `->foreign()`…):
+
+```bash
+php artisan migrate --pretend | lockline check --from laravel -
+```
+
+Each Laravel migration is one unit, named after its file
+(`database/migrations/2026_10_17_000000_add_nickname_to_users.php`, or under
+`--laravel-dir`), so annotations land on the PHP file. Positions in the report count the
+statements of the migration, since the PHP file has no SQL lines. Both the Laravel 9+ output
+(`⇂` lines) and the older `ClassName: statement` format are understood. `migrate --pretend`
+needs a database connection to know which migrations are pending.
+
+`->change()` repeats `SET NOT NULL` on columns that already are NOT NULL; lockline knows
+PostgreSQL does not scan the table in that case and does not flag it. To give it the schema
+of migrations that already ran, pass Laravel's schema dump:
+
+```bash
+php artisan migrate --pretend | lockline check --from laravel - --history database/schema/pgsql-schema.sql
+```
+
+## In CI
+
+The action installs a verified release binary and annotates the pull request:
+
+```yaml
+- uses: sebastdv/lockline@v0.1.0
+  with:
+    path: migrations/          # or: from: laravel, path: pretend.txt
+    history: migrations/       # optional: schema context from earlier files
+    fail-on: error             # or warning
+    sarif: "true"              # optional: also write lockline.sarif
+- uses: github/codeql-action/upload-sarif@v3   # optional, needs `security-events: write`
+  if: always()
+  with:
+    sarif_file: lockline.sarif
+```
+
+To check only the migrations a pull request adds, pass those files as `path` and the
+migrations directory as `history`: earlier files are read only to learn the schema (column
+types, NOT NULL columns, validated checks) and are never reported.
+
+`version: source` builds the action's own checkout with cargo instead of downloading a
+release; this repository's [dogfood workflow](.github/workflows/dogfood.yml) uses it on
+`examples/migrations`.
+
+## Output formats
+
+- `human` (default): every statement with its lock, and the findings.
+- `json`: a stable document (`"version": 1`) with every file, statement, effect (table,
+  lock, `blocks_reads`, `blocks_writes`, cost), finding, suppression and held lock, plus a
+  summary.
+- `sarif`: SARIF 2.1.0 with one rule per lockline rule (its documentation included), the
+  findings, and suppressed findings marked as suppressed in source with their reason.
+- `github`: workflow commands that GitHub shows as annotations on the changed files.
+
+The exit code is the same in every format.
 
 ## Prior art
 
@@ -186,8 +255,8 @@ lockline stands on the shoulders of great tools, and you should look at them too
 lockline's angle is different: it **explains the lock of every statement** (not only the
 ones that break a rule), it **understands the migration's context** (new tables,
 transactions, the schema of earlier files), and its lock catalog is **checked against real
-PostgreSQL 14–17** by a test suite. It will also read Laravel's `migrate --pretend` output directly
-(milestone 4).
+PostgreSQL 14–17** by a test suite. It also reads Laravel's `migrate --pretend` output
+directly.
 
 ## How the lock catalog is verified
 
