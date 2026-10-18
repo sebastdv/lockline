@@ -549,7 +549,11 @@ fn alter_cmd_effect(cmd: &AlterTableCmd, table: &TableRef, schema: &Schema) -> O
             CmdEffect::new(AccessExclusive, cost)
         }
         AtSetNotNull => {
-            let cost = if schema.has_validated_not_null_check(table, &cmd.name) {
+            // PostgreSQL only scans when the column was nullable and no validated
+            // CHECK (col IS NOT NULL) proves there are no NULLs.
+            let cost = if schema.is_not_null(table, &cmd.name)
+                || schema.has_validated_not_null_check(table, &cmd.name)
+            {
                 Cost::Metadata
             } else {
                 Cost::Scan

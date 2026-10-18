@@ -5,7 +5,7 @@
 //! safe type widenings, `SET NOT NULL` backed by a validated check, and the table behind an
 //! index name.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use pg_query::NodeEnum;
 use pg_query::protobuf::{
@@ -87,6 +87,8 @@ pub struct Schema {
 #[derive(Debug, Clone, Default)]
 struct TableInfo {
     columns: HashMap<String, TypeSpec>,
+    /// Columns known to be NOT NULL (declared so, part of the primary key, or SET NOT NULL).
+    not_null: HashSet<String>,
     not_null_checks: Vec<NotNullCheck>,
     /// Foreign key constraint name -> what it references.
     foreign_keys: BTreeMap<String, ForeignKey>,
@@ -110,6 +112,13 @@ struct NotNullCheck {
 impl Schema {
     pub fn column_type(&self, table: &TableRef, column: &str) -> Option<&TypeSpec> {
         self.tables.get(table)?.columns.get(column)
+    }
+
+    /// The column is already NOT NULL, so `SET NOT NULL` has nothing to check.
+    pub fn is_not_null(&self, table: &TableRef, column: &str) -> bool {
+        self.tables
+            .get(table)
+            .is_some_and(|t| t.not_null.contains(column))
     }
 
     pub fn has_validated_not_null_check(&self, table: &TableRef, column: &str) -> bool {
@@ -168,11 +177,13 @@ impl Schema {
                             }
                             for c in column_constraints(column) {
                                 info.add_foreign_key(c, &table.name, Some(&column.colname));
+                                info.add_not_null(c, Some(&column.colname));
                             }
                         }
                         Some(NodeEnum::Constraint(c)) => {
                             info.add_check(c);
                             info.add_foreign_key(c, &table.name, None);
+                            info.add_not_null(c, None);
                         }
                         _ => {}
                     }
@@ -227,11 +238,19 @@ impl Schema {
                     if let Some(NodeEnum::ColumnDef(column)) = def {
                         for c in column_constraints(column) {
                             info.add_foreign_key(c, &table.name, Some(&column.colname));
+                            info.add_not_null(c, Some(&column.colname));
                         }
                     }
                 }
+                Ok(AlterTableType::AtSetNotNull) => {
+                    info.not_null.insert(cmd.name.clone());
+                }
+                Ok(AlterTableType::AtDropNotNull) => {
+                    info.not_null.remove(&cmd.name);
+                }
                 Ok(AlterTableType::AtDropColumn) => {
                     info.columns.remove(&cmd.name);
+                    info.not_null.remove(&cmd.name);
                     info.not_null_checks.retain(|c| c.column != cmd.name);
                     info.foreign_keys
                         .retain(|_, fk| !fk.columns.contains(&cmd.name));
@@ -240,6 +259,7 @@ impl Schema {
                     if let Some(NodeEnum::Constraint(c)) = def {
                         info.add_check(c);
                         info.add_foreign_key(c, &table.name, None);
+                        info.add_not_null(c, None);
                     }
                 }
                 Ok(AlterTableType::AtValidateConstraint) => {
@@ -281,6 +301,9 @@ impl Schema {
         {
             if let Some(t) = info.columns.remove(&stmt.subname) {
                 info.columns.insert(stmt.newname.clone(), t);
+            }
+            if info.not_null.remove(&stmt.subname) {
+                info.not_null.insert(stmt.newname.clone());
             }
             for check in &mut info.not_null_checks {
                 if check.column == stmt.subname {
@@ -340,6 +363,26 @@ impl TableInfo {
                 columns,
             },
         );
+    }
+
+    /// Records columns a constraint makes NOT NULL: a column's `NOT NULL` or `PRIMARY KEY`, or
+    /// the columns of a table-level `PRIMARY KEY (...)`.
+    fn add_not_null(&mut self, c: &Constraint, inline_column: Option<&str>) {
+        let not_null = c.contype == ConstrType::ConstrNotnull as i32;
+        let primary = c.contype == ConstrType::ConstrPrimary as i32;
+        match inline_column {
+            Some(column) if not_null || primary => {
+                self.not_null.insert(column.to_string());
+            }
+            None if primary => {
+                for key in &c.keys {
+                    if let Some(NodeEnum::String(s)) = key.node.as_ref() {
+                        self.not_null.insert(s.sval.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Records `CHECK (col IS NOT NULL)`; other constraints are ignored.

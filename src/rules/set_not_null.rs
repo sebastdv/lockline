@@ -19,6 +19,9 @@ impl Rule for SetNotNull {
         let table = &target.table;
         let cmd = table_alter_cmds(&ctx.stmt.node).into_iter().find(|cmd| {
             cmd.subtype == AlterTableType::AtSetNotNull as i32
+                // Already NOT NULL (Laravel's ->change() repeats SET NOT NULL): PostgreSQL
+                // only checks the rows when the column was nullable.
+                && !ctx.schema.is_not_null(table, &cmd.name)
                 && !ctx.schema.has_validated_not_null_check(table, &cmd.name)
         })?;
         let column = quote_ident(&cmd.name);

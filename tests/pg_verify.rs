@@ -561,6 +561,11 @@ fn alter_table_matches_postgres() {
             "ALTER TABLE users ADD CONSTRAINT age_nn CHECK (age IS NOT NULL);",
             "ALTER TABLE users ALTER COLUMN age SET NOT NULL",
         ),
+        // Laravel's ->change() repeats SET NOT NULL on columns that already are: no scan.
+        tx_after(
+            "ALTER TABLE users ALTER COLUMN age SET NOT NULL;",
+            "ALTER TABLE users ALTER COLUMN age SET NOT NULL",
+        ),
         tx("ALTER TABLE users ADD CONSTRAINT c CHECK (age > 0)"),
         tx("ALTER TABLE users ADD CONSTRAINT c CHECK (age > 0) NOT VALID"),
         tx("ALTER TABLE users ADD CONSTRAINT fk FOREIGN KEY (org_id) REFERENCES orgs (id)"),
