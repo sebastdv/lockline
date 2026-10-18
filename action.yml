@@ -1,0 +1,95 @@
+name: lockline
+description: Explains the locks your PostgreSQL migrations take and flags the dangerous ones, as annotations on the pull request.
+author: Sebastián Ardila
+branding:
+  icon: lock
+  color: blue
+
+inputs:
+  path:
+    description: "Files or directories to check, separated by spaces. With `from: laravel`, the saved output of `php artisan migrate --pretend`."
+    required: true
+  from:
+    description: "`sql`, or `laravel` for the output of `php artisan migrate --pretend`."
+    default: sql
+  history:
+    description: Migrations that already ran, read only to learn the schema (a directory of .sql files, or a schema dump).
+    default: ""
+  fail-on:
+    description: Fail the step on findings of this severity or higher (`error` or `warning`).
+    default: error
+  version:
+    description: Release to install (`latest`, or a tag such as `v0.2.0`), or `source` to build the action's own checkout with cargo.
+    default: latest
+  sarif:
+    description: Also write `lockline.sarif`, to upload with github/codeql-action/upload-sarif.
+    default: "false"
+  args:
+    description: Extra arguments for `lockline check`.
+    default: ""
+
+outputs:
+  sarif-file:
+    description: Path of the SARIF file, when `sarif` is true.
+    value: ${{ steps.check.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install lockline
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$RUNNER_TEMP/lockline"
+        if [ "$VERSION" = source ]; then
+          cargo install --locked --path "$ACTION_PATH" --root "$root"
+        else
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64) target=x86_64-unknown-linux-gnu ;;
+            Linux-ARM64) target=aarch64-unknown-linux-gnu ;;
+            macOS-ARM64) target=aarch64-apple-darwin ;;
+            macOS-X64) target=x86_64-apple-darwin ;;
+            *) echo "::error::lockline has no prebuilt binary for $RUNNER_OS $RUNNER_ARCH; use version: source"; exit 1 ;;
+          esac
+          if [ "$VERSION" = latest ]; then
+            base="https://github.com/sebastdv/lockline/releases/latest/download"
+          else
+            base="https://github.com/sebastdv/lockline/releases/download/$VERSION"
+          fi
+          archive="lockline-$target.tar.gz"
+          mkdir -p "$root/bin" "$root/download"
+          cd "$root/download"
+          curl -fsSLO "$base/$archive"
+          curl -fsSLO "$base/$archive.sha256"
+          # Refuse a binary whose checksum does not match the one published with the release.
+          if command -v sha256sum >/dev/null; then sha256sum -c "$archive.sha256"; else shasum -a 256 -c "$archive.sha256"; fi
+          tar -xzf "$archive" -C "$root/bin" --strip-components=1 "lockline-$target/lockline"
+        fi
+        echo "$root/bin" >> "$GITHUB_PATH"
+
+    - name: Check migrations
+      id: check
+      shell: bash
+      env:
+        PATHS: ${{ inputs.path }}
+        FROM: ${{ inputs.from }}
+        HISTORY: ${{ inputs.history }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        SARIF: ${{ inputs.sarif }}
+        ARGS: ${{ inputs.args }}
+      run: |
+        set -uo pipefail
+        read -ra paths <<< "$PATHS"
+        # `${extra[@]+...}` below: an empty array under `set -u` breaks bash 3.2 (macOS).
+        read -ra extra <<< "$ARGS"
+        options=(--from "$FROM" --fail-on "$FAIL_ON")
+        if [ -n "$HISTORY" ]; then options+=(--history "$HISTORY"); fi
+        if [ "$SARIF" = true ]; then
+          # The SARIF run never fails the step: the annotations run below decides.
+          lockline check "${options[@]}" --format sarif ${extra[@]+"${extra[@]}"} "${paths[@]}" > lockline.sarif || true
+          echo "sarif-file=lockline.sarif" >> "$GITHUB_OUTPUT"
+        fi
+        lockline check "${options[@]}" --format github ${extra[@]+"${extra[@]}"} "${paths[@]}"

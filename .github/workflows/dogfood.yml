@@ -1,0 +1,31 @@
+# lockline checks its own example migrations with the action in this repository, so every
+# change to the action or the analyzer shows up as annotations and code scanning alerts.
+name: Dogfood
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./
+        # The examples are dangerous on purpose: the annotations are the point.
+        continue-on-error: true
+        with:
+          path: examples/migrations
+          version: source
+          sarif: "true"
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: lockline.sarif
+          category: lockline
