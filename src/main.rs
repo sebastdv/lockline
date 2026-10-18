@@ -6,11 +6,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use globset::GlobSet;
 
 use lockline::config::{ConfigError, FileConfig, exclude_set, find_config, load_config};
-use lockline::input::collect_units;
+use lockline::input::{DEFAULT_MIGRATIONS_DIR, collect_history, collect_laravel, collect_units};
 use lockline::model::Severity;
-use lockline::report::{HumanOptions, render_human, render_json};
+use lockline::report::{HumanOptions, render_github, render_human, render_json, render_sarif};
 use lockline::rules::infos;
-use lockline::{Config, TransactionMode, analyze};
+use lockline::{Config, TransactionMode, analyze_with_history};
 
 #[derive(Parser)]
 #[command(
@@ -25,7 +25,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Analyze migration files, directories (searched for *.sql) or stdin (`-`)
+    /// Analyze migration files, directories (searched for *.sql), stdin (`-`), or the output
+    /// of `php artisan migrate --pretend` (`--from laravel`)
     Check(CheckArgs),
     /// List every rule with its default severity
     Rules,
@@ -58,12 +59,35 @@ struct CheckArgs {
     /// Output format (`--quiet` and `--color` only apply to human)
     #[arg(long, value_enum, default_value_t = Format::Human)]
     format: Format,
+    /// What the input is: SQL, or the saved/piped output of `php artisan migrate --pretend`
+    #[arg(long, value_enum, default_value_t = From::Sql)]
+    from: From,
+    /// With `--from laravel`: folder of the PHP migrations, so findings name their file
+    #[arg(long, value_name = "DIR", default_value = DEFAULT_MIGRATIONS_DIR)]
+    laravel_dir: String,
+    /// Migrations that already ran, read only to learn the schema and never reported: a
+    /// directory of .sql files (those that sort before the ones checked) or one file, such as
+    /// a schema dump (`php artisan schema:dump`, `pg_dump --schema-only`)
+    #[arg(long, value_name = "PATH")]
+    history: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Format {
     Human,
     Json,
+    /// SARIF 2.1.0, for GitHub code scanning
+    Sarif,
+    /// GitHub Actions annotations on the pull request
+    Github,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum From {
+    /// SQL files, directories of .sql files, or SQL on stdin
+    Sql,
+    /// Output of `php artisan migrate --pretend` (a saved file, or `-` for a pipe)
+    Laravel,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -130,7 +154,11 @@ fn check(args: CheckArgs) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let units = match collect_units(&args.paths, &mut io::stdin()) {
+    let collected = match args.from {
+        From::Sql => collect_units(&args.paths, &mut io::stdin()),
+        From::Laravel => collect_laravel(&args.paths, &mut io::stdin(), &args.laravel_dir),
+    };
+    let units = match collected {
         Ok(collected) => {
             for warning in &collected.warnings {
                 eprintln!("warning: {warning}");
@@ -163,7 +191,17 @@ fn check(args: CheckArgs) -> ExitCode {
         transaction,
         rules: file_config.rules.into_iter().collect(),
     };
-    let report = analyze(&units, &config);
+    let history = match &args.history {
+        None => Vec::new(),
+        Some(path) => match collect_history(path, &units) {
+            Ok(collected) => collected.units,
+            Err(error) => {
+                eprintln!("error: --history {error}");
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let report = analyze_with_history(&history, &units, &config);
     let output = match args.format {
         Format::Human => render_human(
             &report,
@@ -173,6 +211,8 @@ fn check(args: CheckArgs) -> ExitCode {
             },
         ),
         Format::Json => render_json(&report),
+        Format::Sarif => render_sarif(&report),
+        Format::Github => render_github(&report),
     };
     if let Err(error) = io::stdout().lock().write_all(output.as_bytes())
         && error.kind() != io::ErrorKind::BrokenPipe

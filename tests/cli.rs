@@ -372,3 +372,65 @@ fn exclude_matches_paths_relative_to_the_config() {
         .code(0)
         .stdout(predicate::str::contains("in 1 file"));
 }
+
+#[test]
+fn laravel_input_from_a_file_and_from_a_pipe() {
+    lockline()
+        .args(["check", "--from", "laravel", "tests/fixtures/laravel/pretend-13.txt", "--quiet"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(
+            "database/migrations/2026_10_17_000000_add_nickname_to_users.php (SQL from migrate --pretend)",
+        ));
+    lockline()
+        .args(["check", "--from", "laravel", "-", "--laravel-dir", "app/db"])
+        .write_stdin(include_str!("fixtures/laravel/pretend-13.txt"))
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(
+            "app/db/2026_10_17_000000_add_nickname_to_users.php",
+        ));
+    lockline()
+        .args(["check", "--from", "laravel", "tests/fixtures/clean"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is a directory"));
+}
+
+#[test]
+fn sarif_and_github_formats() {
+    lockline()
+        .args([
+            "check",
+            "tests/fixtures/dangerous/0001_index.sql",
+            "--format",
+            "sarif",
+        ])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("\"version\": \"2.1.0\""));
+    lockline()
+        .args([
+            "check",
+            "tests/fixtures/dangerous/0001_index.sql",
+            "--format",
+            "github",
+        ])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::starts_with(
+            "::error file=tests/fixtures/dangerous/0001_index.sql,line=",
+        ));
+}
+
+#[test]
+fn history_flag() {
+    lockline()
+        .args(["check", "-", "--history", "does/not/exist"])
+        .write_stdin("SELECT 1;")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "--history does/not/exist: no such file or directory",
+        ));
+}
