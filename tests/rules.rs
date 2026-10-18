@@ -4,6 +4,7 @@ use lockline::{Config, MigrationUnit, UnitReport, analyze};
 
 fn unit(sql: &str, mode: TransactionMode) -> UnitReport {
     let units = [MigrationUnit {
+        source: Default::default(),
         name: "m.sql".into(),
         sql: sql.into(),
     }];
@@ -240,14 +241,17 @@ fn alter_column_type_fires() {
 fn alter_column_type_knows_the_previous_type_across_units() {
     let units = [
         MigrationUnit {
+            source: Default::default(),
             name: "0001.sql".into(),
             sql: "CREATE TABLE users (email varchar(100));".into(),
         },
         MigrationUnit {
+            source: Default::default(),
             name: "0002.sql".into(),
             sql: "ALTER TABLE users ALTER COLUMN email TYPE varchar(200);".into(),
         },
         MigrationUnit {
+            source: Default::default(),
             name: "0003.sql".into(),
             sql: "ALTER TABLE users ALTER COLUMN email TYPE varchar(50);".into(),
         },
@@ -292,14 +296,17 @@ fn set_not_null_fires() {
 fn set_not_null_skips() {
     let units = [
         MigrationUnit {
+            source: Default::default(),
             name: "0001.sql".into(),
             sql: "CREATE TABLE users (email text);".into(),
         },
         MigrationUnit {
+            source: Default::default(),
             name: "0002.sql".into(),
             sql: "ALTER TABLE users ADD CONSTRAINT c CHECK (email IS NOT NULL) NOT VALID;".into(),
         },
         MigrationUnit {
+            source: Default::default(),
             name: "0003.sql".into(),
             sql: "ALTER TABLE users VALIDATE CONSTRAINT c; \
                   ALTER TABLE users ALTER COLUMN email SET NOT NULL;"
@@ -807,5 +814,35 @@ fn inline_primary_key_is_not_null() {
     assert!(
         rules.contains(&"add-column-not-null-without-default"),
         "{rules:?}"
+    );
+}
+
+#[test]
+fn set_not_null_on_a_column_that_is_already_not_null_is_free() {
+    // The table comes from an earlier migration, so it is an existing table here.
+    let fired_after_create = |sql: &str| -> Vec<&'static str> {
+        let units = [
+            MigrationUnit::new(
+                "0001.sql",
+                "CREATE TABLE t (a int NOT NULL, b int PRIMARY KEY, c int, d int);\nALTER TABLE t ADD PRIMARY KEY (c);",
+            ),
+            MigrationUnit::new("0002.sql", sql),
+        ];
+        let report = analyze(&units, &Config::default());
+        report.units[1].all_findings().map(|f| f.rule).collect()
+    };
+    for column in ["a", "b", "c"] {
+        let sql = format!("ALTER TABLE t ALTER COLUMN {column} SET NOT NULL;");
+        assert!(
+            !fired_after_create(&sql).contains(&"set-not-null"),
+            "{column}"
+        );
+    }
+    assert!(
+        fired_after_create("ALTER TABLE t ALTER COLUMN d SET NOT NULL;").contains(&"set-not-null")
+    );
+    assert!(
+        fired_after_create("ALTER TABLE t ALTER COLUMN a DROP NOT NULL;\nALTER TABLE t ALTER COLUMN a SET NOT NULL;")
+            .contains(&"set-not-null")
     );
 }

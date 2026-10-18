@@ -5,6 +5,7 @@ fn report(units: &[(&str, &str)]) -> Report {
     let units: Vec<MigrationUnit> = units
         .iter()
         .map(|(name, sql)| MigrationUnit {
+            source: Default::default(),
             name: name.to_string(),
             sql: sql.to_string(),
         })

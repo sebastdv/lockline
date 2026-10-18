@@ -1,0 +1,37 @@
+
+   INFO  Preparing database.  
+
+  Creating migration table ...................................... 15.28ms DONE
+
+   INFO  Running migrations.  
+
+  0001_01_01_000000_create_users_table .......................................  
+  ⇂ create table "users" ("id" bigserial not null primary key, "name" varchar(255) not null, "email" varchar(255) not null, "email_verified_at" timestamp(0) without time zone null, "password" varchar(255) not null, "remember_token" varchar(100) null, "created_at" timestamp(0) without time zone null, "updated_at" timestamp(0) without time zone null)  
+  ⇂ alter table "users" add constraint "users_email_unique" unique ("email")  
+  ⇂ create table "password_reset_tokens" ("email" varchar(255) not null, "token" varchar(255) not null, "created_at" timestamp(0) without time zone null)  
+  ⇂ alter table "password_reset_tokens" add primary key ("email")  
+  ⇂ create table "sessions" ("id" varchar(255) not null, "user_id" bigint null, "ip_address" varchar(45) null, "user_agent" text null, "payload" text not null, "last_activity" integer not null)  
+  ⇂ alter table "sessions" add primary key ("id")  
+  ⇂ create index "sessions_user_id_index" on "sessions" ("user_id")  
+  ⇂ create index "sessions_last_activity_index" on "sessions" ("last_activity")  
+  0001_01_01_000001_create_cache_table .......................................  
+  ⇂ create table "cache" ("key" varchar(255) not null, "value" text not null, "expiration" bigint not null)  
+  ⇂ alter table "cache" add primary key ("key")  
+  ⇂ create index "cache_expiration_index" on "cache" ("expiration")  
+  ⇂ create table "cache_locks" ("key" varchar(255) not null, "owner" varchar(255) not null, "expiration" bigint not null)  
+  ⇂ alter table "cache_locks" add primary key ("key")  
+  ⇂ create index "cache_locks_expiration_index" on "cache_locks" ("expiration")  
+  0001_01_01_000002_create_jobs_table ........................................  
+  ⇂ create table "jobs" ("id" bigserial not null primary key, "queue" varchar(255) not null, "payload" text not null, "attempts" smallint not null, "reserved_at" integer null, "available_at" integer not null, "created_at" integer not null)  
+  ⇂ create index "jobs_queue_index" on "jobs" ("queue")  
+  ⇂ create table "job_batches" ("id" varchar(255) not null, "name" varchar(255) not null, "total_jobs" integer not null, "pending_jobs" integer not null, "failed_jobs" integer not null, "failed_job_ids" text not null, "options" text null, "cancelled_at" integer null, "created_at" integer not null, "finished_at" integer null)  
+  ⇂ alter table "job_batches" add primary key ("id")  
+  ⇂ create table "failed_jobs" ("id" bigserial not null primary key, "uuid" varchar(255) not null, "connection" varchar(255) not null, "queue" varchar(255) not null, "payload" text not null, "exception" text not null, "failed_at" timestamp(0) without time zone not null default CURRENT_TIMESTAMP)  
+  ⇂ create index "failed_jobs_connection_queue_failed_at_index" on "failed_jobs" ("connection", "queue", "failed_at")  
+  ⇂ alter table "failed_jobs" add constraint "failed_jobs_uuid_unique" unique ("uuid")  
+  2026_10_17_000000_add_nickname_to_users ....................................  
+  ⇂ alter table "users" add column "nickname" varchar(255) null  
+  ⇂ create index "users_email_index" on "users" ("email")  
+  ⇂ alter table "users" alter column "name" type varchar(100), alter column "name" set not null, alter column "name" drop default, alter column "name" drop identity if exists  
+  ⇂ comment on column "users"."name" is NULL  
+

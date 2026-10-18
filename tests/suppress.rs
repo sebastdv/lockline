@@ -4,6 +4,7 @@ use lockline::{Config, MigrationUnit, Report, analyze};
 
 fn report(sql: &str) -> Report {
     let units = [MigrationUnit {
+        source: Default::default(),
         name: "m.sql".into(),
         sql: sql.into(),
     }];

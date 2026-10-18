@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use owo_colors::OwoColorize;
 
-use crate::analyze::{Report, StatementReport, TransactionSummary, UnitReport};
+use crate::analyze::{Report, Source, StatementReport, TransactionSummary, UnitReport};
 use crate::locks::LockMode;
 use crate::model::{Analysis, Cost, Effect, Finding, Severity};
 
@@ -35,7 +35,11 @@ pub fn render_human(report: &Report, opts: &HumanOptions) -> String {
 }
 
 fn render_unit(unit: &UnitReport, opts: &HumanOptions) -> String {
-    let mut out = format!("{}\n", unit.name);
+    let mut out = match unit.source {
+        Source::Sql => format!("{}\n", unit.name),
+        // Positions count statements in Laravel's output, not lines of the PHP file.
+        Source::Laravel => format!("{} (SQL from migrate --pretend)\n", unit.name),
+    };
     for finding in &unit.findings {
         render_finding(&mut out, finding, opts);
     }

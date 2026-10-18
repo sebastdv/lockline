@@ -3,6 +3,7 @@ use lockline::{Config, MigrationUnit, Report, analyze};
 
 fn report() -> Report {
     let units = [MigrationUnit {
+        source: Default::default(),
         name: "migrations/0007_add_email_index.sql".into(),
         sql: "CREATE INDEX idx_users_email ON users (email);\n\
               -- lockline:ignore missing-lock-timeout runs off-peak\n\

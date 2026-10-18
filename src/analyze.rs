@@ -17,9 +17,33 @@ use crate::suppress::{Ignore, parse_ignores};
 /// One migration as it will run: a file, stdin, or one migration from a tool's output.
 #[derive(Debug, Clone)]
 pub struct MigrationUnit {
-    /// Shown in reports: the path as given, or `<stdin>`.
+    /// Shown in reports: the path as given, `<stdin>`, or the migration file a tool's output
+    /// names.
     pub name: String,
     pub sql: String,
+    pub source: Source,
+}
+
+impl MigrationUnit {
+    /// A unit read from SQL as written (a file or stdin).
+    pub fn new(name: impl Into<String>, sql: impl Into<String>) -> MigrationUnit {
+        MigrationUnit {
+            name: name.into(),
+            sql: sql.into(),
+            source: Source::Sql,
+        }
+    }
+}
+
+/// Where a unit's SQL came from, which decides what its line numbers point at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Source {
+    /// SQL as written: lines point into the file.
+    #[default]
+    Sql,
+    /// SQL printed by `php artisan migrate --pretend`, one statement per line: lines count
+    /// statements, not lines of the PHP migration.
+    Laravel,
 }
 
 /// How the migration tool runs each unit.
@@ -84,6 +108,7 @@ pub struct Suppressed {
 #[derive(Debug, Clone)]
 pub struct UnitReport {
     pub name: String,
+    pub source: Source,
     pub statements: Vec<StatementReport>,
     /// Findings about the unit as a whole, such as `parse-error`.
     pub findings: Vec<Finding>,
@@ -197,9 +222,23 @@ impl Report {
 }
 
 pub fn analyze(units: &[MigrationUnit], config: &Config) -> Report {
+    analyze_with_history(&[], units, config)
+}
+
+/// Like [`analyze`], after running `history` (migrations that already ran) only to build the
+/// virtual schema: column types and validated NOT NULL checks from earlier files inform the
+/// analysis of the new ones, and nothing about `history` is reported.
+pub fn analyze_with_history(
+    history: &[MigrationUnit],
+    units: &[MigrationUnit],
+    config: &Config,
+) -> Report {
     let rules = rules::all();
     // The virtual schema accumulates across units, in the order they run.
     let mut schema = Schema::default();
+    for unit in history {
+        analyze_unit(unit, config, &rules, &mut schema);
+    }
     let units = units
         .iter()
         .map(|unit| analyze_unit(unit, config, &rules, &mut schema))
@@ -215,6 +254,7 @@ fn analyze_unit(
 ) -> UnitReport {
     let mut report = UnitReport {
         name: unit.name.clone(),
+        source: unit.source,
         statements: Vec::new(),
         findings: Vec::new(),
         transactions: Vec::new(),

@@ -1,13 +1,14 @@
 //! Reads migration units from files, directories and stdin.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::analyze::MigrationUnit;
+use crate::analyze::{MigrationUnit, Source};
 
 #[derive(Debug, Error)]
 pub enum InputError {
@@ -15,6 +16,8 @@ pub enum InputError {
     NotFound { path: String },
     #[error("{path}: {source}")]
     Io { path: String, source: io::Error },
+    #[error("{path}: {message}")]
+    Laravel { path: String, message: String },
 }
 
 #[derive(Debug, Default)]
@@ -151,7 +154,7 @@ fn unit(name: String, sql: String) -> MigrationUnit {
         Some(rest) => rest.to_string(),
         None => sql,
     };
-    MigrationUnit { name, sql }
+    MigrationUnit::new(name, sql)
 }
 
 fn io_error(path: &Path, source: io::Error) -> InputError {
@@ -159,4 +162,82 @@ fn io_error(path: &Path, source: io::Error) -> InputError {
         path: path.display().to_string(),
         source,
     }
+}
+
+/// Migrations that already ran, read only to learn the schema (`--history`).
+///
+/// - A directory: its `.sql` files that sort before the first analyzed file (natural order by
+///   file name), skipping the analyzed files themselves. In CI this lets you check only the
+///   files a pull request adds, with the context of the ones before it.
+/// - A file: all of it, for example a `pg_dump --schema-only` or Laravel's
+///   `php artisan schema:dump` (`database/schema/pgsql-schema.sql`).
+///
+/// `COPY ... FROM stdin` data blocks and psql meta-commands (`\restrict`, `\connect`) that
+/// dumps contain are removed: they are not SQL the parser accepts.
+pub fn collect_history(path: &Path, analyzed: &[MigrationUnit]) -> Result<Collected, InputError> {
+    if !path.exists() {
+        return Err(InputError::NotFound {
+            path: path.display().to_string(),
+        });
+    }
+    let mut collected = collect_units(&[path.to_path_buf()], &mut io::empty())?;
+    if path.is_dir() {
+        let analyzed_paths: HashSet<PathBuf> = analyzed
+            .iter()
+            .filter(|u| u.source == Source::Sql)
+            .filter_map(|u| fs::canonicalize(&u.name).ok())
+            .collect();
+        let first = analyzed
+            .iter()
+            .filter(|u| u.name != "<stdin>")
+            .filter_map(|u| Path::new(&u.name).file_name().map(PathBuf::from))
+            .min_by(|a, b| natural_cmp(a, b));
+        collected.units.retain(|unit| {
+            let resolved = fs::canonicalize(&unit.name).ok();
+            let analyzed_too = resolved.is_some_and(|p| analyzed_paths.contains(&p));
+            let earlier = match (&first, Path::new(&unit.name).file_name()) {
+                (Some(first), Some(name)) => natural_cmp(Path::new(name), first) == Ordering::Less,
+                _ => true,
+            };
+            !analyzed_too && earlier
+        });
+    }
+    for unit in &mut collected.units {
+        unit.sql = strip_dump_noise(&unit.sql);
+    }
+    Ok(collected)
+}
+
+/// Removes `COPY ... FROM stdin;` data (up to the `\.` line) and psql meta-commands.
+fn strip_dump_noise(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut in_copy = false;
+    for line in sql.lines() {
+        if in_copy {
+            if line == "\\." {
+                in_copy = false;
+            }
+            out.push('\n');
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('\\') {
+            out.push('\n');
+            continue;
+        }
+        if trimmed.len() >= 5
+            && trimmed[..5].eq_ignore_ascii_case("copy ")
+            && trimmed
+                .trim_end()
+                .to_ascii_lowercase()
+                .ends_with("from stdin;")
+        {
+            in_copy = true;
+            out.push('\n');
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }

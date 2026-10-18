@@ -4,6 +4,7 @@ use lockline::{Config, Counts, MigrationUnit, TransactionMode, UnitReport, analy
 
 fn run(sql: &str, mode: TransactionMode) -> UnitReport {
     let units = [MigrationUnit {
+        source: Default::default(),
         name: "m.sql".into(),
         sql: sql.into(),
     }];
@@ -156,10 +157,12 @@ fn parse_error_is_a_unit_finding() {
 fn counts_and_max_severity() {
     let units = [
         MigrationUnit {
+            source: Default::default(),
             name: "a.sql".into(),
             sql: "CREATE INDEX i ON users (email);".into(),
         },
         MigrationUnit {
+            source: Default::default(),
             name: "b.sql".into(),
             sql: "SELECT 1; SELECT 2;".into(),
         },
@@ -214,6 +217,7 @@ fn tables_created_from_queries_are_new() {
 #[test]
 fn counts_not_analyzed() {
     let units = [MigrationUnit {
+        source: Default::default(),
         name: "m.sql".into(),
         sql: "SELECT 1; ALTER TABLE users ADD COLUMN a int;".into(),
     }];

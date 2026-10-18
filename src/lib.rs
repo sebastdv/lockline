@@ -15,6 +15,6 @@ pub mod suppress;
 pub mod volatility;
 
 pub use analyze::{
-    Config, Counts, HeldLock, MigrationUnit, Report, StatementReport, Suppressed, TransactionMode,
-    TransactionSummary, UnitReport, analyze,
+    Config, Counts, HeldLock, MigrationUnit, Report, Source, StatementReport, Suppressed,
+    TransactionMode, TransactionSummary, UnitReport, analyze, analyze_with_history,
 };
